@@ -94,6 +94,7 @@ struct ProxyJob {
 
 Preferences prefs;
 String g_wifiSsid, g_wifiPass, g_adminPass;
+String g_adminSession;                    // random per-boot admin session token
 String g_tokens[MAX_TOKENS];
 int g_tokenCount = 0;
 Provider g_providers[MAX_PROVIDERS];
@@ -470,9 +471,21 @@ int fetchModels(int idx) {
 // ---------------------------------------------------------------------------
 // Auth
 // ---------------------------------------------------------------------------
+// Pulls the value of the esp_auth cookie, or "" when absent.
+String sessionCookieValue() {
+  if (!server.hasHeader("Cookie")) return "";
+  String c = server.header("Cookie");
+  int p = c.indexOf("esp_auth=");
+  if (p < 0) return "";
+  int start = p + 9;
+  int end = c.indexOf(';', start);
+  if (end < 0) end = c.length();
+  return c.substring(start, end);
+}
+
 bool isAuthenticated() {
-  if (!server.hasHeader("Cookie")) return false;
-  return server.header("Cookie").indexOf("esp_auth=ok") >= 0;
+  if (g_adminSession.length() == 0) return false;
+  return sessionCookieValue() == g_adminSession;  // exact match, no substring trick
 }
 
 bool authCheck() {
@@ -1320,6 +1333,12 @@ void handleChat() {
 
 void handleNotFound() { sendError(404, "not found"); }
 
+// /admin/status mirrors /health but requires an authenticated admin session.
+void handleAdminStatus() {
+  if (!requireAdmin()) return;
+  handleHealth();
+}
+
 // ---------------------------------------------------------------------------
 // Admin JSON API — Core 0
 // ---------------------------------------------------------------------------
@@ -1655,7 +1674,7 @@ code{background:#0d1526;border:1px solid var(--border);padding:1px 6px;border-ra
 void handleLoginPost() {
   String p = server.arg("password");
   if (p == g_adminPass) {
-    server.sendHeader("Set-Cookie", "esp_auth=ok; Path=/; Max-Age=86400");
+    server.sendHeader("Set-Cookie", "esp_auth=" + g_adminSession + "; Path=/; Max-Age=86400; HttpOnly");
     server.sendHeader("Location", "/");
     server.send(303, "", "");
   } else {
@@ -1702,8 +1721,9 @@ void setup() {
   Serial.printf("\n=== NixRoute v%s ===\n", VERSION);
   g_bootMs = millis();
   loadConfig();
-  Serial.printf("admin %s | tokens %d | wifi %s | providers %d\n",
-                g_adminPass.c_str(),
+  // Random per-boot admin session token. The password itself is never logged.
+  g_adminSession = genToken();
+  Serial.printf("admin auth enabled | tokens %d | wifi %s | providers %d\n",
                 g_tokenCount,
                 g_wifiSsid.length() ? g_wifiSsid.c_str() : "(none)",
                 g_providerCount);
@@ -1740,7 +1760,7 @@ void setup() {
   server.on("/admin/login", HTTP_POST, handleLoginPost);
   server.on("/admin/logout", HTTP_GET, handleLogout);
   server.on("/health", HTTP_GET, handleHealth);
-  server.on("/admin/status", HTTP_GET, handleHealth);
+  server.on("/admin/status", HTTP_GET, handleAdminStatus);
   server.on("/v1/models", HTTP_GET, handleModels);
   server.on("/v1/chat/completions", HTTP_POST, handleChat, handleChatRaw);
 

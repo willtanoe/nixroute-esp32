@@ -85,26 +85,13 @@ struct ProxyJob {
   int n;
   ProviderSnap providers[MAX_PROVIDERS];
   NetworkClient client;
+  volatile bool bodyDone;  // set by the raw handler at RAW_END
 };
 
 // Stream used by HTTPClient::sendRequest to pull the request body (already
 // rewritten) from the FreeRTOS stream buffer filled by the raw handler.
-extern StreamBufferHandle_t g_bodyStream;
-
-class BodyStream : public Stream {
-public:
-  int available() override { return (int)xStreamBufferBytesAvailable(g_bodyStream); }
-  int read() override {
-    uint8_t b;
-    if (xStreamBufferReceive(g_bodyStream, &b, 1, pdMS_TO_TICKS(10000)) == 1) return b;
-    return -1;
-  }
-  int peek() override { return -1; }
-  size_t write(uint8_t) override { return 0; }
-  size_t write(const uint8_t*, size_t) override { return 0; }
-  int availableForWrite() override { return 0; }
-  void flush() override {}
-};
+// (Unused now that the proxy task streams the body directly via chunked
+// transfer encoding — kept out to avoid dead code.)
 
 Preferences prefs;
 String g_wifiSsid, g_wifiPass, g_localToken, g_adminPass;
@@ -139,7 +126,7 @@ String g_head;          // first ~2 KB of the request body (to detect "model")
 bool g_headDone = false;
 String g_chatError;
 int g_chatErrorCode = 0;
-BodyStream g_bodyStreamReader;
+ProxyJob* g_currentJob = NULL;
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -567,35 +554,161 @@ void writeErrorRaw(NetworkClient& c, int code, const String& msg) {
   writeJson(c, code, out);
 }
 
-void writeStream(NetworkClient& c, HTTPClient& http, uint32_t* pt, uint32_t* ct, uint32_t* tt) {
+// ---------------------------------------------------------------------------
+// Light token trimmer (stateful): collapses double spaces and blank lines.
+// ---------------------------------------------------------------------------
+class TokenTrimmer {
+  int _spaces;
+  int _newlines;
+public:
+  TokenTrimmer() : _spaces(0), _newlines(0) {}
+  void reset() { _spaces = 0; _newlines = 0; }
+  void trim(const uint8_t* in, size_t len, String& out) {
+    for (size_t i = 0; i < len; i++) {
+      char c = (char)in[i];
+      if (c == '\n') {
+        _spaces = 0;
+        if (++_newlines <= 1) out += c;   // collapse redundant blank lines
+      } else if (c == ' ' || c == '\t') {
+        _newlines = 0;
+        if (++_spaces <= 1) out += ' ';   // collapse double spaces
+      } else {
+        _spaces = 0;
+        _newlines = 0;
+        out += c;
+      }
+    }
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Manual HTTPS client (chunked upload + response) — used by the proxy task
+// ---------------------------------------------------------------------------
+void parseUrl(const String& url, String& host, uint16_t& port, String& path) {
+  port = 443;
+  String s = url;
+  if (s.startsWith("https://")) s = s.substring(8);
+  else if (s.startsWith("http://")) { s = s.substring(7); port = 80; }
+  int slash = s.indexOf('/');
+  if (slash >= 0) { path = s.substring(slash); s = s.substring(0, slash); }
+  else path = "/";
+  int colon = s.indexOf(':');
+  if (colon >= 0) { host = s.substring(0, colon); port = (uint16_t)s.substring(colon + 1).toInt(); }
+  else host = s;
+}
+
+int readResponseHeaders(WiFiClientSecure& client, bool* chunked, size_t* contentLength) {
+  *chunked = false;
+  *contentLength = 0;
+  int code = 0;
+  String status = client.readStringUntil('\n');
+  status.trim();
+  int sp1 = status.indexOf(' ');
+  if (sp1 >= 0) {
+    int sp2 = status.indexOf(' ', sp1 + 1);
+    String cs = (sp2 >= 0) ? status.substring(sp1 + 1, sp2) : status.substring(sp1 + 1);
+    code = cs.toInt();
+  }
+  while (true) {
+    String line = client.readStringUntil('\n');
+    line.trim();
+    if (line.length() == 0) break;
+    int d = line.indexOf(':');
+    if (d < 0) continue;
+    String name = line.substring(0, d);
+    String value = line.substring(d + 1);
+    value.trim();
+    if (name.equalsIgnoreCase("Transfer-Encoding") && value.indexOf("chunked") >= 0) *chunked = true;
+    else if (name.equalsIgnoreCase("Content-Length")) *contentLength = (size_t)value.toInt();
+  }
+  return code;
+}
+
+size_t readChunkSize(WiFiClientSecure& client) {
+  String line = client.readStringUntil('\n');
+  line.trim();
+  int semi = line.indexOf(';');
+  if (semi >= 0) line = line.substring(0, semi);
+  return (size_t)strtoul(line.c_str(), NULL, 16);
+}
+
+String readBodyManual(WiFiClientSecure& client, bool chunked, size_t contentLength) {
+  String body;
+  body.reserve(4096);
+  uint8_t buf[1024];
+  if (chunked) {
+    while (true) {
+      size_t sz = readChunkSize(client);
+      if (sz == 0) { client.readStringUntil('\n'); break; }
+      size_t remaining = sz;
+      while (remaining > 0) {
+        size_t want = remaining > sizeof(buf) ? sizeof(buf) : remaining;
+        int r = client.read(buf, want);
+        if (r <= 0) break;
+        body.concat((const char*)buf, (unsigned)r);
+        remaining -= r;
+      }
+      client.readStringUntil('\n');
+    }
+  } else if (contentLength > 0) {
+    size_t remaining = contentLength;
+    while (remaining > 0) {
+      size_t want = remaining > sizeof(buf) ? sizeof(buf) : remaining;
+      int r = client.read(buf, want);
+      if (r <= 0) break;
+      body.concat((const char*)buf, (unsigned)r);
+      remaining -= r;
+    }
+  } else {
+    while (client.available()) {
+      int r = client.read(buf, sizeof(buf));
+      if (r <= 0) break;
+      body.concat((const char*)buf, (unsigned)r);
+    }
+  }
+  return body;
+}
+
+void streamResponseManual(WiFiClientSecure& client, bool chunked, size_t contentLength,
+                          NetworkClient& c, uint32_t* pt, uint32_t* ct, uint32_t* tt) {
   c.print("HTTP/1.1 200 OK\r\n");
   c.print("Content-Type: text/event-stream\r\n");
   c.print("Access-Control-Allow-Origin: *\r\n");
   c.print("Cache-Control: no-cache\r\n");
   c.print("Transfer-Encoding: chunked\r\n");
-  c.print("Connection: close\r\n");
-  c.print("\r\n");
-  NetworkClient* stream = http.getStreamPtr();
+  c.print("Connection: close\r\n\r\n");
   uint8_t buf[1024];
   String tail;
   tail.reserve(2048);
-  if (stream) {
-    while (stream->connected() || stream->available()) {
-      size_t avail = stream->available();
-      if (avail) {
-        if (avail > sizeof(buf)) avail = sizeof(buf);
-        int r = stream->read(buf, avail);
-        if (r > 0) {
-          c.printf("%x\r\n", (unsigned)r);
-          c.write(buf, r);
-          c.print("\r\n");
-          c.flush();
-          tail.concat(reinterpret_cast<const char*>(buf), (unsigned)r);
-          if (tail.length() > 2048) tail.remove(0, tail.length() - 2048);
-        }
-      } else {
-        delay(1);
-      }
+  size_t remaining = contentLength;
+  while (true) {
+    size_t want;
+    if (chunked) {
+      size_t sz = readChunkSize(client);
+      if (sz == 0) { client.readStringUntil('\n'); break; }
+      remaining = sz;
+      want = remaining > sizeof(buf) ? sizeof(buf) : remaining;
+    } else if (contentLength > 0) {
+      if (remaining == 0) break;
+      want = remaining > sizeof(buf) ? sizeof(buf) : remaining;
+    } else {
+      size_t avail = client.available();
+      if (!avail) { if (!client.connected()) break; delay(1); continue; }
+      want = avail > sizeof(buf) ? sizeof(buf) : avail;
+    }
+    int r = client.read(buf, want);
+    if (r <= 0) break;
+    c.printf("%x\r\n", (unsigned)r);
+    c.write(buf, r);
+    c.print("\r\n");
+    c.flush();
+    tail.concat((const char*)buf, (unsigned)r);
+    if (tail.length() > 2048) tail.remove(0, tail.length() - 2048);
+    if (chunked) {
+      remaining -= r;
+      if (remaining == 0) client.readStringUntil('\n');
+    } else if (contentLength > 0) {
+      remaining -= r;
     }
   }
   c.print("0\r\n\r\n");
@@ -606,47 +719,86 @@ void writeStream(NetworkClient& c, HTTPClient& http, uint32_t* pt, uint32_t* ct,
 // ---------------------------------------------------------------------------
 // Proxy engine (runs on Core 1)
 // ---------------------------------------------------------------------------
-int doUpstream(const ProviderSnap& p, size_t contentLength, bool isStream,
+int doUpstream(const ProviderSnap& p, bool isStream, volatile bool* bodyDone,
                NetworkClient& c, const String& fullModel) {
-  String url = apiRoot(p.url) + "/chat/completions";
+  String host;
+  uint16_t port;
+  String path;
+  parseUrl(apiRoot(p.url) + "/chat/completions", host, port, path);
   unsigned long t0 = millis();
   WiFiClientSecure client;
   client.setInsecure();
-  HTTPClient http;
-  if (!http.begin(client, url)) {
+  if (!client.connect(host.c_str(), port)) {
     bumpMetrics(p.id, false, 0, 0);
     recordUsage(fullModel.c_str(), 0, 0, 0, 0, false);
     return 0;
   }
-  http.addHeader("Content-Type", "application/json");
-  if (p.key.length()) http.addHeader("Authorization", "Bearer " + p.key);
-  http.addHeader("Accept", isStream ? "text/event-stream" : "application/json");
-  if (p.id == "openrouter") {
-    http.addHeader("HTTP-Referer", "http://" + WiFi.localIP().toString());
-    http.addHeader("X-Title", "NixRoute");
+
+  // request headers (chunked upload — length-independent, trimmer-friendly)
+  client.printf("POST %s HTTP/1.1\r\n", path.c_str());
+  client.printf("Host: %s\r\n", host.c_str());
+  client.print("Content-Type: application/json\r\n");
+  if (p.key.length()) {
+    client.print("Authorization: Bearer ");
+    client.print(p.key);
+    client.print("\r\n");
   }
-  http.setTimeout(30000);
-  // Stream the (already rewritten) request body from the stream buffer without
-  // ever buffering it fully in RAM.
-  int code = http.sendRequest("POST", &g_bodyStreamReader, contentLength);
+  client.print(isStream ? "Accept: text/event-stream\r\n" : "Accept: application/json\r\n");
+  if (p.id == "openrouter") {
+    client.print("HTTP-Referer: http://" + WiFi.localIP().toString() + "\r\n");
+    client.print("X-Title: NixRoute\r\n");
+  }
+  client.print("Transfer-Encoding: chunked\r\n");
+  client.print("Connection: close\r\n\r\n");
+
+  // stream the request body (trimmed) as chunked
+  TokenTrimmer trimmer;
+  uint8_t buf[1024];
+  String out;
+  out.reserve(1024);
+  while (true) {
+    size_t r = xStreamBufferReceive(g_bodyStream, buf, sizeof(buf), pdMS_TO_TICKS(200));
+    if (r > 0) {
+      trimmer.trim(buf, r, out);
+      if (out.length() >= 512) {
+        client.printf("%x\r\n", (unsigned)out.length());
+        client.write((const uint8_t*)out.c_str(), out.length());
+        client.print("\r\n");
+        out = "";
+      }
+    } else if (bodyDone && *bodyDone) {
+      break;
+    }
+  }
+  if (out.length()) {
+    client.printf("%x\r\n", (unsigned)out.length());
+    client.write((const uint8_t*)out.c_str(), out.length());
+    client.print("\r\n");
+  }
+  client.print("0\r\n\r\n");
+
+  // read response
+  bool chunked;
+  size_t contentLength;
+  int code = readResponseHeaders(client, &chunked, &contentLength);
   unsigned long lat = millis() - t0;
 
   bool ok = (code >= 200 && code < 300);
   if (ok) {
     uint32_t pt = 0, ct = 0, tt = 0;
     if (isStream) {
-      writeStream(c, http, &pt, &ct, &tt);
+      streamResponseManual(client, chunked, contentLength, c, &pt, &ct, &tt);
     } else {
-      String resp = http.getString();
+      String resp = readBodyManual(client, chunked, contentLength);
       parseUsage(resp, pt, ct, tt);
       writeJson(c, 200, resp.length() ? resp : "{}");
     }
     recordUsage(fullModel.c_str(), pt, ct, tt, lat, true);
   } else {
-    http.getString();  // drain body, free connection
+    readBodyManual(client, chunked, contentLength);  // drain
     recordUsage(fullModel.c_str(), 0, 0, 0, lat, false);
   }
-  http.end();
+  client.stop();
   bumpMetrics(p.id, ok, code, lat);
   recordProviderResult(p.id, ok, code);
   return code;
@@ -662,7 +814,7 @@ void processProxyJob(ProxyJob* job) {
   for (int k = 0; k < job->n; k++) {
     const ProviderSnap& p = job->providers[(start + k) % job->n];
     String fullModel = p.id + "/" + job->upstreamModel;
-    int code = doUpstream(p, job->contentLength, job->isStream, c, fullModel);
+    int code = doUpstream(p, job->isStream, &job->bodyDone, c, fullModel);
     if (code >= 200 && code < 300) { ok = true; break; }
     lastCode = code;
     // Only fail over when the connection failed before the body was consumed
@@ -839,6 +991,7 @@ void detectAndStream() {
     job->providers[k].key = g_providers[idx].key;
   }
   job->client = server.client();
+  job->bodyDone = false;
 
   if (xQueueSend(g_proxyQueue, &job, 0) != pdTRUE) {
     delete job;
@@ -846,6 +999,7 @@ void detectAndStream() {
     g_chatErrorCode = 503;
     return;
   }
+  g_currentJob = job;
 
   // stream the rewritten head into the body pipe
   xStreamBufferSend(g_bodyStream, (const uint8_t*)g_head.c_str(), g_head.length(), pdMS_TO_TICKS(10000));
@@ -861,11 +1015,13 @@ void handleChatRaw() {
     g_headDone = false;
     g_chatError = "";
     g_chatErrorCode = 0;
+    g_currentJob = NULL;
     if (!authCheck()) { g_chatError = "unauthorized"; g_chatErrorCode = 401; g_headDone = true; }
     return;
   }
 
   if (raw.status == RAW_END) {
+    if (g_currentJob) g_currentJob->bodyDone = true;
     if (!g_headDone && g_chatError.length() == 0) {
       g_chatError = "missing model";
       g_chatErrorCode = 400;

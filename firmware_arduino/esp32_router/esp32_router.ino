@@ -2020,7 +2020,10 @@ void setup() {
   g_bodyStream = xStreamBufferCreate(8192, 1);
 
   // Pin the WebServer to Core 0 and the proxy engine to Core 1.
-  xTaskCreatePinnedToCore(webServerTask, "web", 8192, NULL, 1, &g_webTask, 0);
+  // Generous web stack: serving the 40 KB dashboard + JSON handlers must never
+  // overflow into heap and corrupt the collected-header list (which manifested
+  // as intermittent cookie/auth failures until reboot).
+  xTaskCreatePinnedToCore(webServerTask, "web", 16384, NULL, 1, &g_webTask, 0);
   xTaskCreatePinnedToCore(proxyTask, "proxy", 16384, NULL, 2, &g_proxyTask, 1);
 
   Serial.printf("HTTP :80 dashboard http://%s/ heap %d (web=Core0, proxy=Core1)\n",

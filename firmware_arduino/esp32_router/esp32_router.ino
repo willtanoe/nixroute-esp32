@@ -1467,18 +1467,38 @@ void handleApiProviderAdd() {
 
   if (!name.length() || !url.length()) { sendError(400, "name and url are required"); return; }
 
-  String id = slugify(name);
+  // An explicit "id" marks this as an EDIT of an existing provider. Without it
+  // the call is an ADD, and a name whose slug collides with an existing id must
+  // be rejected instead of silently overwriting the other provider.
+  String idIn = doc["id"] | "";
+  idIn.trim();
+
   statsLock();
-  int idx = findProvider(id);
-  if (idx < 0) {
+  int idx;
+  if (idIn.length()) {
+    idx = findProvider(idIn);
+    if (idx < 0) {
+      statsUnlock();
+      sendError(404, "provider not found");
+      return;
+    }
+  } else {
+    String sid = slugify(name);
+    idx = findProvider(sid);
+    if (idx >= 0) {
+      statsUnlock();
+      sendError(409, "a provider with this name already exists - pick a distinct name");
+      return;
+    }
     if (g_providerCount >= MAX_PROVIDERS) {
       statsUnlock();
       sendError(409, "provider limit reached (" + String(MAX_PROVIDERS) + ")");
       return;
     }
     idx = g_providerCount++;
-    g_providers[idx].id = id;
+    g_providers[idx].id = sid;
   }
+  String id = g_providers[idx].id;
   g_providers[idx].name = name;
   g_providers[idx].url = url;
   g_providers[idx].active = active;

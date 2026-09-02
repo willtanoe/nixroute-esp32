@@ -498,7 +498,9 @@ function renderProviders(){
   });
 }
 
+var provEditId=null;
 function resetProviderForm(){
+  provEditId=null;
   document.getElementById('prov-form-title').textContent='Add Provider';
   document.getElementById('p-name').value='';document.getElementById('p-url').value='';
   document.getElementById('p-key').value='';document.getElementById('p-active').checked=true;
@@ -513,7 +515,9 @@ async function saveProvider(){
   if(!name||!url){toast('Name and Base URL are required','error');return}
   var btn=document.getElementById('p-save');btn.disabled=true;btn.textContent='Saving...';
   try{
-    var r=await post('/api/providers',{name:name,url:url,key:key,active:active});
+    var body={name:name,url:url,key:key,active:active};
+    if(provEditId)body.id=provEditId;   // explicit id marks an edit, not an add
+    var r=await post('/api/providers',body);
     if(r.fetched_models>=0)toast('Provider "'+r.name+'" saved — '+r.fetched_models+' models','ok');
     else if(r.fetch_error)toast('Saved, but model fetch failed: '+r.fetch_error,'error');
     else toast('Provider "'+r.name+'" saved','ok');
@@ -524,6 +528,7 @@ async function saveProvider(){
 
 function editProvider(id){
   var p=S.providers.find(function(x){return x.id===id});if(!p)return;
+  provEditId=id;
   document.getElementById('prov-form-title').textContent='Edit Provider';
   document.getElementById('p-name').value=p.name;
   document.getElementById('p-url').value=p.url;

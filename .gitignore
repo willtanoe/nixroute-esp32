@@ -1,0 +1,63 @@
+# Secrets — never commit
+.env
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+credentials.json
+config/secrets.json
+
+# ESP-IDF / PlatformIO build artifacts
+firmware/.pio/
+firmware/.vscode/
+firmware/.pioenvs/
+firmware/.piolibdeps/
+firmware/build/
+firmware/dist/
+firmware/sdkconfig
+firmware/sdkconfig.old
+firmware/.pio/build/
+firmware/build/
+build/
+dist/
+
+# IDE / OS
+.vscode/
+.idea/
+*.code-workspace
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Python / tests
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Node (if tools use it)
+node_modules/
+npm-debug.log*
+
+# Logs / temp
+*.log
+*.tmp
+tmp/
+out/
+
+# Hardware / debug
+research/downloads/
+research/cloned/
+*.bin
+*.elf
+*.map
+
+# Keep example configs
+!config/example/**
+!.env.example

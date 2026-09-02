@@ -86,9 +86,10 @@ struct ProxyJob {
   int n;
   ProviderSnap providers[MAX_PROVIDERS];
   NetworkClient client;
-  volatile bool bodyDone;  // set by the raw handler once the body is complete
-  volatile bool aborted;   // set by the raw handler when the upload is aborted
-  volatile bool bodySent;  // set once the full body has been relayed upstream
+  volatile bool bodyDone;         // set by the raw handler once the body is complete
+  volatile bool aborted;          // set by the raw handler when the upload is aborted
+  volatile bool bodySent;         // set once the full body has been relayed upstream
+  volatile bool responseStarted;  // set once an HTTP response head was sent to the client
 };
 
 
@@ -942,6 +943,7 @@ int relayUpstream(T& client, ProxyJob* job, NetworkClient& c,
 
   bool ok = (code >= 200 && code < 300);
   if (ok) {
+    job->responseStarted = true;  // 200 head is about to hit the client
     uint32_t pt = 0, ct = 0, tt = 0;
     bool sent = true;
     if (job->isStream) {
@@ -1034,7 +1036,9 @@ void processProxyJob(ProxyJob* job) {
     recordUsage(job->model.c_str(), 0, 0, 0, millis() - t0, false);
   }
 
-  if (!ok && !aborted) {
+  if (!ok && !aborted && !job->responseStarted) {
+    // Never append a JSON error after a 200/SSE head was already streamed;
+    // in that case just close the connection (Connection: close is set).
     if (lastCode == 429) writeErrorRaw(c, 429, "all providers rate-limited");
     else if (lastCode >= 500 || lastCode <= 0) writeErrorRaw(c, 502, "all providers failed");
     else writeErrorRaw(c, lastCode > 0 ? lastCode : 502, "upstream error");
@@ -1347,6 +1351,7 @@ bool detectAndStream() {
   job->bodyDone = false;
   job->aborted = false;
   job->bodySent = false;
+  job->responseStarted = false;
   for (int k = 0; k < n; k++) {
     int idx = candidates[k];
     job->providers[k].id = g_providers[idx].id;
@@ -1881,6 +1886,7 @@ void handleLoginPost() {
     server.sendHeader("Location", "/");
     server.send(303, "", "");
   } else {
+    delay(500);  // cheap throttle against password brute-forcing on the LAN
     server.send(200, "text/html", "<body style='background:#0f172a;color:#e2e8f0;font-family:sans-serif;text-align:center;padding-top:60px'><p>Wrong password. <a href=/login style='color:#818cf8'>Back</a></p></body>");
   }
 }

@@ -30,6 +30,7 @@
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/stream_buffer.h"
+#include "mbedtls/md.h"
 #include "dashboard_html.h"
 
 #define VERSION          "3.2.0"
@@ -127,6 +128,11 @@ bool g_headDone = false;
 String g_chatError;
 int g_chatErrorCode = 0;
 ProxyJob* g_currentJob = NULL;
+
+// WebSocket live telemetry
+#define MAX_WS_CLIENTS 4
+WiFiServer wsServer(81);
+WiFiClient wsClients[MAX_WS_CLIENTS];
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -720,7 +726,8 @@ void streamResponseManual(WiFiClientSecure& client, bool chunked, size_t content
 // Proxy engine (runs on Core 1)
 // ---------------------------------------------------------------------------
 int doUpstream(const ProviderSnap& p, bool isStream, volatile bool* bodyDone,
-               NetworkClient& c, const String& fullModel) {
+               NetworkClient& c, const String& fullModel, uint32_t& outTokens) {
+  outTokens = 0;
   String host;
   uint16_t port;
   String path;
@@ -794,6 +801,7 @@ int doUpstream(const ProviderSnap& p, bool isStream, volatile bool* bodyDone,
       writeJson(c, 200, resp.length() ? resp : "{}");
     }
     recordUsage(fullModel.c_str(), pt, ct, tt, lat, true);
+    outTokens = tt;
   } else {
     readBodyManual(client, chunked, contentLength);  // drain
     recordUsage(fullModel.c_str(), 0, 0, 0, lat, false);
@@ -810,11 +818,12 @@ void processProxyJob(ProxyJob* job) {
   int lastCode = 0;
   bool ok = false;
   unsigned long t0 = millis();
+  uint32_t tokens = 0;
   uint32_t start = g_rr++ % job->n;
   for (int k = 0; k < job->n; k++) {
     const ProviderSnap& p = job->providers[(start + k) % job->n];
     String fullModel = p.id + "/" + job->upstreamModel;
-    int code = doUpstream(p, job->isStream, &job->bodyDone, c, fullModel);
+    int code = doUpstream(p, job->isStream, &job->bodyDone, c, fullModel, tokens);
     if (code >= 200 && code < 300) { ok = true; break; }
     lastCode = code;
     // Only fail over when the connection failed before the body was consumed
@@ -832,6 +841,18 @@ void processProxyJob(ProxyJob* job) {
     else if (lastCode >= 500 || lastCode <= 0) writeErrorRaw(c, 502, "all providers failed");
     else writeErrorRaw(c, lastCode > 0 ? lastCode : 502, "upstream error");
   }
+
+  // broadcast real-time telemetry to the dashboard
+  JsonDocument telem;
+  telem["type"] = "request";
+  telem["model"] = job->model;
+  telem["latency_ms"] = millis() - t0;
+  telem["tokens"] = tokens;
+  telem["status"] = ok ? "ok" : "fail";
+  String tj;
+  serializeJson(telem, tj);
+  broadcastWs(tj);
+
   Serial.printf("chat model=%s candidates=%d code=%d heap=%d core=%d\n",
                 job->model.c_str(), job->n, lastCode, ESP.getFreeHeap(), xPortGetCoreID());
   c.stop();
@@ -845,6 +866,92 @@ void proxyTask(void*) {
       delete job;
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// WebSocket live telemetry (Core 0)
+// ---------------------------------------------------------------------------
+String wsAcceptKey(const String& key) {
+  String k = key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+  uint8_t sha[20];
+  mbedtls_md_context_t ctx;
+  mbedtls_md_init(&ctx);
+  mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA1), 0);
+  mbedtls_md_starts(&ctx);
+  mbedtls_md_update(&ctx, (const unsigned char*)k.c_str(), k.length());
+  mbedtls_md_finish(&ctx, sha);
+  mbedtls_md_free(&ctx);
+
+  static const char b64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  String out;
+  for (int i = 0; i < 20; i += 3) {
+    uint32_t v = (sha[i] << 16) | ((i + 1 < 20 ? sha[i + 1] : 0) << 8) | (i + 2 < 20 ? sha[i + 2] : 0);
+    out += b64[(v >> 18) & 0x3F];
+    out += b64[(v >> 12) & 0x3F];
+    out += (i + 1 < 20) ? b64[(v >> 6) & 0x3F] : '=';
+    out += (i + 2 < 20) ? b64[v & 0x3F] : '=';
+  }
+  return out;
+}
+
+void wsSendFrame(WiFiClient& c, const String& msg) {
+  size_t len = msg.length();
+  uint8_t hdr[10];
+  int h = 0;
+  hdr[h++] = 0x81;  // FIN + text opcode
+  if (len < 126) {
+    hdr[h++] = (uint8_t)len;
+  } else if (len < 65536) {
+    hdr[h++] = 126;
+    hdr[h++] = (uint8_t)((len >> 8) & 0xFF);
+    hdr[h++] = (uint8_t)(len & 0xFF);
+  } else {
+    hdr[h++] = 127;
+    for (int i = 7; i >= 0; i--) hdr[h++] = (uint8_t)((len >> (i * 8)) & 0xFF);
+  }
+  c.write(hdr, h);
+  c.write((const uint8_t*)msg.c_str(), len);
+}
+
+void broadcastWs(const String& msg) {
+  statsLock();
+  for (int i = 0; i < MAX_WS_CLIENTS; i++) {
+    if (wsClients[i] && wsClients[i].connected()) {
+      wsSendFrame(wsClients[i], msg);
+    }
+  }
+  statsUnlock();
+}
+
+void wsAcceptClients() {
+  WiFiClient nc = wsServer.available();
+  if (!nc) return;
+  String key = "";
+  bool upgrade = false;
+  // read handshake headers
+  if (nc.readStringUntil('\n').length()) {
+    while (nc.available()) {
+      String line = nc.readStringUntil('\n');
+      line.trim();
+      if (line.length() == 0) break;
+      if (line.startsWith("Upgrade:") && line.indexOf("websocket") >= 0) upgrade = true;
+      if (line.startsWith("Sec-WebSocket-Key:")) key = line.substring(18);
+      key.trim();
+    }
+  }
+  if (!upgrade || key.length() == 0) { nc.stop(); return; }
+  nc.print("HTTP/1.1 101 Switching Protocols\r\n");
+  nc.print("Upgrade: websocket\r\n");
+  nc.print("Connection: Upgrade\r\n");
+  nc.print("Sec-WebSocket-Accept: " + wsAcceptKey(key) + "\r\n\r\n");
+  statsLock();
+  for (int i = 0; i < MAX_WS_CLIENTS; i++) {
+    if (!wsClients[i] || !wsClients[i].connected()) {
+      wsClients[i] = nc;
+      break;
+    }
+  }
+  statsUnlock();
 }
 
 // ---------------------------------------------------------------------------
@@ -1369,6 +1476,7 @@ void webServerTask(void*) {
   for (;;) {
     server.handleClient();
     if (g_apMode) dnsServer.processNextRequest();
+    wsAcceptClients();
   }
 }
 
@@ -1443,6 +1551,7 @@ void setup() {
   const char* hk[] = {"Authorization", "Cookie", "Content-Length"};
   server.collectHeaders(hk, 3);
   server.begin();
+  wsServer.begin();
 
   // FreeRTOS primitives
   g_statsMutex = xSemaphoreCreateMutex();

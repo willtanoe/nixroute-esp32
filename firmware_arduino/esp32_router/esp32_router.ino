@@ -172,17 +172,17 @@ void handleRoot(){
   String dsMask=g_deepseekKey.length()?maskKey(g_deepseekKey):"kosong";
   String orMask=g_openrouterKey.length()?maskKey(g_openrouterKey):"kosong";
   String cuMask=g_customUrl.length()?(g_customUrl+" <code>"+maskKey(g_customKey)+"</code>"):"kosong";
-  String html = String(R"HTML(<!doctype html><html><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>ESP32 Router</title><style>
+  String html = String(R"HTML(<!doctype html><html><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>NixRoute ESP32</title><style>
 *{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#f6f6f3;color:#111}
 .header{position:sticky;top:0;background:#fff;border-bottom:1px solid #e5e5e5;padding:12px 16px;display:flex;justify-content:space-between;align-items:center}
-.logo{display:flex;align-items:center;gap:8px;font-weight:700}.logo i{width:28px;height:28px;border-radius:8px;background:linear-gradient(135deg,#f97815,#c2590a);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800}
+.logo{display:flex;align-items:center;gap:10px;font-weight:700}.logo i{width:28px;height:28px;border-radius:8px;background:linear-gradient(135deg,#0ea5e9,#6366f1);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:14px}
 .wrap{max-width:920px;margin:20px auto;padding:0 16px;display:flex;flex-direction:column;gap:16px}
 .card{background:#fff;border:1px solid #e5e5e5;border-radius:16px;padding:16px 16px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
 .card h2{font-size:14px;font-weight:600;margin:0 0 12px;display:flex;align-items:center;gap:8px}
 .row{display:flex;align-items:center;gap:8px;margin:8px 0}
 .badge{font-size:11px;font-family:monospace;padding:2px 8px;border-radius:999px;background:#f0f0f0;min-width:78px;text-align:center}
 .badge.on{background:#e6f4ea;color:#137333}.mono{font-family:monospace;font-size:13px;background:#f6f6f3;border:1px solid #e5e5e5;border-radius:10px;padding:8px 10px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.btn{padding:7px 12px;border-radius:10px;border:1px solid #111;background:#111;color:#fff;font-size:13px;cursor:pointer}
+.btn{padding:7px 12px;border-radius:10px;border:1px solid #0ea5e9;background:#0ea5e9;color:#fff;font-size:13px;cursor:pointer}
 .btn.ghost{background:#fff;color:#111;border:1px solid #ddd}
 .btn.red{background:#fff;color:#d00;border:1px solid #f0c0c0}
 .input{width:100%;padding:8px 10px;border:1px solid #ddd;border-radius:10px;font-size:13px}
@@ -190,7 +190,7 @@ void handleRoot(){
 .kv b{color:#111}
 .small{font-size:12px;color:#666}
 .ok{color:#137333}.warn{color:#b06000}
-</style></head><body><div class=header><div class=logo><i>9</i> ESP32 Router <span style="font-weight:400;color:#666">— SuprimX</span></div><div><a href=/admin/logout style="font-size:13px;color:#666;text-decoration:none">Logout</a></div></div><div class=wrap>
+</style></head><body><div class=header><div class=logo><i>N</i> NixRoute ESP32 <span style="font-weight:400;color:#666">— SuprimX · 9router fork</span></div><div><a href=/admin/logout style="font-size:13px;color:#666;text-decoration:none">Logout</a></div></div><div class=wrap>
 )HTML")
   + "<div class=card><h2>◉ API Endpoint</h2>"
   + "<div class=row><span class='badge on'>Local</span><div class=mono>http://"+ip+"/v1</div><button class='btn ghost' onclick=\"navigator.clipboard.writeText('http://"+ip+"/v1')\">Copy</button></div>"

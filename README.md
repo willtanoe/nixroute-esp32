@@ -79,12 +79,53 @@ tests/scripts/        # host-side HTTP smoke tests (no hardware needed)
 
 ## Build & Flash
 
+### Prerequisites
+
+1. Install [Arduino CLI](https://arduino.github.io/arduino-cli/) (or use the Arduino IDE).
+2. Add the ESP32 board package:
+
+   ```bash
+   arduino-cli config init
+   arduino-cli config add board_manager.additional_urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+   arduino-cli core update-index
+   arduino-cli core install esp32:esp32
+   ```
+
+3. Install `ArduinoJson`:
+
+   ```bash
+   arduino-cli lib install ArduinoJson
+   ```
+
+### Find your serial port
+
+Replace `<PORT>` below with your board's port (e.g. `COM11` on Windows,
+`/dev/ttyUSB0` on Linux, `/dev/cu.usbserial-*` on macOS):
+
+```bash
+arduino-cli board list
+```
+
+### Compile & upload
+
 ```bash
 # board: DOIT ESP32 DEVKIT V1 → FQBN esp32:esp32:esp32
 arduino-cli compile --fqbn esp32:esp32:esp32 firmware_arduino/esp32_router/esp32_router.ino
-arduino-cli upload  --fqbn esp32:esp32:esp32 --port COM11 firmware_arduino/esp32_router/esp32_router.ino
-arduino-cli monitor --port COM11 --config baudrate=115200
+arduino-cli upload  --fqbn esp32:esp32:esp32 --port <PORT> firmware_arduino/esp32_router/esp32_router.ino
+arduino-cli monitor --port <PORT> --config baudrate=115200
 ```
+
+### Using the Arduino IDE
+
+1. Open the Arduino IDE and install the **esp32** board package via
+   *File → Preferences → Additional boards manager URLs*:
+   `https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json`,
+   then *Tools → Board → Boards Manager* → search **esp32** → install.
+2. Install **ArduinoJson** via *Tools → Manage Libraries* → search **ArduinoJson** → install.
+3. Open `firmware_arduino/esp32_router/esp32_router.ino`.
+4. Select the board *Tools → Board → esp32 → ESP32 Dev Module* (DOIT ESP32 DEVKIT V1).
+5. Select your port *Tools → Port*.
+6. Click **Upload**, then open the Serial Monitor at `115200` baud.
 
 Typical build size (ESP32 core 3.3.11):
 

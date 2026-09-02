@@ -1,0 +1,31 @@
+{
+  "wifi": {
+    "ssid": "YOUR_SSID",
+    "password": "YOUR_PASSWORD"
+  },
+  "local_token": "",
+  "providers": {
+    "deepseek": {
+      "base_url": "https://api.deepseek.com",
+      "key": "sk-...",
+      "models": ["deepseek-chat", "deepseek-reasoner"]
+    },
+    "openrouter": {
+      "base_url": "https://openrouter.ai/api/v1",
+      "key": "sk-or-...",
+      "models": ["openrouter-auto"]
+    }
+  },
+  "routing": [
+    { "prefix": "deepseek-", "providers": ["deepseek", "openrouter"] },
+    { "prefix": "claude-", "providers": ["openrouter"] }
+  ],
+  "timeouts": {
+    "upstream_ms": 15000,
+    "connect_ms": 5000
+  },
+  "limits": {
+    "max_body_bytes": 8192,
+    "max_concurrent": 1
+  }
+}

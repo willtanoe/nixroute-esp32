@@ -1,5 +1,9 @@
 # Secrets — never commit
 .env
+nvs.csv
+nvs.bin
+*.nvs.bin
+config/nvs.csv
 *.pem
 *.key
 *.p12

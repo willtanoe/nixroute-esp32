@@ -12,12 +12,12 @@ const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 <title>NixRoute</title>
 <style>
 :root{
-  --bg:#0f172a; --surface:#1e293b; --surface-2:#273449; --surface-3:#1a2438;
-  --border:#334155; --border-2:#3b4a63;
-  --text:#e2e8f0; --muted:#94a3b8; --subtle:#64748b;
-  --accent:#00a8b5; --accent-h:#14c1cf; --accent-soft:rgba(0,168,181,.16);
-  --ok:#10b981; --warn:#f59e0b; --danger:#ef4444;
-  --radius:14px; --shadow:0 4px 24px rgba(0,0,0,.35);
+  --bg:#0d1117; --surface:#161b22; --surface-2:#1c2128; --surface-3:#0d1117;
+  --border:#30363d; --border-2:#3d444d;
+  --text:#e6edf3; --muted:#8b949e; --subtle:#6e7681;
+  --accent:#00a8b5; --accent-h:#0fb9c6; --accent-soft:rgba(0,168,181,.16);
+  --ok:#3fb950; --warn:#d29922; --danger:#f85149;
+  --radius:6px;
 }
 *{box-sizing:border-box}
 html,body{margin:0;padding:0}
@@ -27,7 +27,7 @@ body{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helveti
 a{color:var(--accent);text-decoration:none}
 code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 
-header{position:sticky;top:0;z-index:20;background:rgba(15,23,42,.85);backdrop-filter:blur(10px);
+header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.85);backdrop-filter:blur(10px);
   border-bottom:1px solid var(--border);padding:0 20px}
 .hbar{max-width:1080px;margin:0 auto;display:flex;align-items:center;gap:14px;height:60px}
 .brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:15px;white-space:nowrap}
@@ -37,9 +37,9 @@ header{position:sticky;top:0;z-index:20;background:rgba(15,23,42,.85);backdrop-f
 .pill{font-size:11px;font-weight:600;padding:4px 10px;border-radius:999px;border:1px solid var(--border-2);
   white-space:nowrap;display:inline-flex;align-items:center;gap:6px}
 .pill .dot{width:7px;height:7px;border-radius:50%}
-.pill.ok{color:var(--ok);background:rgba(16,185,129,.1);border-color:rgba(16,185,129,.3)}
+.pill.ok{color:var(--ok);background:rgba(63,185,80,.12);border-color:rgba(63,185,80,.35)}
 .pill.ok .dot{background:var(--ok)}
-.pill.warn{color:var(--warn);background:rgba(245,158,11,.1);border-color:rgba(245,158,11,.3)}
+.pill.warn{color:var(--warn);background:rgba(210,153,34,.12);border-color:rgba(210,153,34,.35)}
 .pill.warn .dot{background:var(--warn)}
 .pill.off{color:var(--muted);background:var(--surface-2)}
 .pill.off .dot{background:var(--subtle)}
@@ -48,24 +48,20 @@ header{position:sticky;top:0;z-index:20;background:rgba(15,23,42,.85);backdrop-f
 .heapbar{width:120px;flex-shrink:0}
 .heapbar .lbl{font-size:10px;color:var(--subtle);display:flex;justify-content:space-between;margin-bottom:3px}
 .heapbar .track{height:6px;border-radius:99px;background:var(--surface-2);overflow:hidden}
-.heapbar .fill{height:100%;background:linear-gradient(90deg,#00a8b5,#10b981);border-radius:99px;transition:width .4s}
-.iconbtn{width:36px;height:36px;border-radius:10px;border:1px solid var(--border-2);background:var(--surface);
-  color:var(--text);cursor:pointer;display:inline-flex;align-items:center;justify-content:center;font-size:15px}
-.iconbtn:hover{background:var(--surface-2)}
-
+.heapbar .fill{height:100%;background:linear-gradient(90deg,#00a8b5,#3fb950);border-radius:99px;transition:width .4s}
 .tabs{max-width:1080px;margin:0 auto;display:flex;gap:4px;padding:12px 20px 0;overflow-x:auto}
 .tabs button{background:transparent;border:0;color:var(--muted);font-size:13px;font-weight:600;
-  padding:9px 16px;border-radius:10px;cursor:pointer;white-space:nowrap}
+  padding:9px 16px;border-radius:6px;cursor:pointer;white-space:nowrap}
 .tabs button:hover{color:var(--text);background:var(--surface)}
 .tabs button.on{color:var(--text);background:var(--surface);box-shadow:inset 0 0 0 1px var(--border)}
-.tabs button .ico{margin-right:7px}
 
 main{max-width:1080px;margin:0 auto;padding:20px}
 .view{display:none}
 .view.on{display:block}
 
 .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
-  padding:20px;margin-bottom:18px;box-shadow:var(--shadow)}
+  padding:20px;margin-bottom:18px}
+.card.form{max-width:640px}
 .card h2{font-size:14px;font-weight:700;margin:0 0 16px;display:flex;align-items:center;gap:8px}
 .card h2 .count{font-size:11px;font-weight:600;color:var(--muted);background:var(--surface-2);
   padding:2px 9px;border-radius:999px}
@@ -73,29 +69,30 @@ main{max-width:1080px;margin:0 auto;padding:20px}
 .card .desc{font-size:12px;color:var(--subtle);margin:-8px 0 14px}
 
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:12px}
-.stat{background:var(--surface-3);border:1px solid var(--border);border-radius:12px;padding:15px}
+.stat{background:var(--surface-3);border:1px solid var(--border);border-radius:var(--radius);padding:15px}
 .stat .lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.03em}
 .stat .val{font-size:21px;font-weight:700;margin-top:5px}
 .stat .val.mono{font-size:14px;word-break:break-all}
 .stat .val.ok{color:var(--ok)} .stat .val.warn{color:var(--warn)} .stat .val.danger{color:var(--danger)}
 
 label{font-size:12px;font-weight:600;display:block;margin:12px 0 6px;color:var(--muted)}
-input,select,textarea{width:100%;padding:10px 12px;border:1px solid var(--border-2);border-radius:10px;
+input,select,textarea{width:100%;padding:10px 12px;border:1px solid var(--border-2);border-radius:6px;
   font-size:14px;background:var(--surface-3);color:var(--text);outline:none;font-family:inherit}
 input:focus,select:focus,textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
 input::placeholder,textarea::placeholder{color:var(--subtle)}
 .frow{display:flex;gap:12px;flex-wrap:wrap}
 .frow>div{flex:1;min-width:180px}
 .pwrap{position:relative}
-.pwrap .eye{position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:0;color:var(--subtle);cursor:pointer;font-size:15px;padding:4px}
-.btn{padding:9px 16px;border-radius:10px;border:1px solid transparent;background:var(--accent);color:#fff;
+.pwrap .eye{position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:0;color:var(--subtle);cursor:pointer;font-size:11px;font-weight:600;padding:4px 6px}
+.pwrap .eye:hover{color:var(--accent)}
+.btn{padding:9px 16px;border-radius:6px;border:1px solid transparent;background:var(--accent);color:#fff;
   font-size:13px;font-weight:600;cursor:pointer}
 .btn:hover{background:var(--accent-h)}
 .btn.ghost{background:transparent;color:var(--text);border-color:var(--border-2)}
 .btn.ghost:hover{background:var(--surface-2)}
-.btn.danger{background:transparent;color:var(--danger);border-color:rgba(239,68,68,.4)}
-.btn.danger:hover{background:rgba(239,68,68,.1)}
-.btn.sm{padding:6px 11px;font-size:12px;border-radius:8px}
+.btn.danger{background:transparent;color:var(--danger);border-color:rgba(248,81,73,.4)}
+.btn.danger:hover{background:rgba(248,81,73,.1)}
+.btn.sm{padding:6px 11px;font-size:12px;border-radius:6px}
 .btn:disabled{opacity:.45;cursor:default}
 .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .spacer{flex:1}
@@ -111,7 +108,7 @@ td.mono{font-family:ui-monospace,monospace;font-size:12px}
 td.ok{color:var(--ok)} td.danger{color:var(--danger)}
 .tnum{text-align:right;font-variant-numeric:tabular-nums}
 
-.provider{border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:12px;background:var(--surface-3)}
+.provider{border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:12px;background:var(--surface-3)}
 .provider .head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .provider .name{font-weight:700}
 .provider .id{font-family:ui-monospace,monospace;font-size:12px;color:var(--accent)}
@@ -131,19 +128,19 @@ td.ok{color:var(--ok)} td.danger{color:var(--danger)}
 .metrics .m b.ok{color:var(--ok)} .metrics .m b.danger{color:var(--danger)} .metrics .m b.warn{color:var(--warn)}
 
 .models{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
-.chip{font-family:ui-monospace,monospace;font-size:11px;padding:3px 9px;border-radius:7px;
+.chip{font-family:ui-monospace,monospace;font-size:11px;padding:3px 9px;border-radius:4px;
   background:var(--surface-2);border:1px solid var(--border);color:var(--muted)}
 .chip.key{color:var(--ok)}
 
 .snippet{display:flex;align-items:center;gap:8px;background:var(--surface-3);border:1px solid var(--border);
-  border-radius:10px;padding:10px 12px;margin-bottom:8px}
+  border-radius:6px;padding:10px 12px;margin-bottom:8px}
 .snippet .tag{font-size:11px;font-weight:700;color:var(--accent);min-width:90px}
 .snippet code{flex:1;font-size:12px;word-break:break-all;color:var(--muted)}
 
 .playground{display:flex;flex-direction:column;gap:12px}
 .playground .chat{display:flex;gap:8px}
 .playground .chat input{flex:1}
-.pg-output{background:var(--surface-3);border:1px solid var(--border);border-radius:12px;padding:16px;
+.pg-output{background:var(--surface-3);border:1px solid var(--border);border-radius:6px;padding:16px;
   min-height:200px;max-height:50vh;overflow-y:auto;white-space:pre-wrap;font-size:13px;color:var(--text)}
 
 .empty{color:var(--subtle);font-size:13px;text-align:center;padding:26px}
@@ -155,8 +152,8 @@ td.ok{color:var(--ok)} td.danger{color:var(--danger)}
 .kv .val{font-family:ui-monospace,monospace;word-break:break-all;text-align:right}
 
 #toast{position:fixed;bottom:20px;right:20px;display:flex;flex-direction:column;gap:8px;z-index:100}
-.toast{background:var(--surface);border:1px solid var(--border-2);border-radius:10px;padding:12px 16px;
-  font-size:13px;box-shadow:var(--shadow);max-width:340px;animation:slide .2s ease}
+.toast{background:var(--surface);border:1px solid var(--border-2);border-radius:6px;padding:12px 16px;
+  font-size:13px;max-width:340px;animation:slide .2s ease}
 .toast.error{border-color:var(--danger)} .toast.ok{border-color:var(--ok)}
 @keyframes slide{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
 
@@ -181,16 +178,16 @@ td.ok{color:var(--ok)} td.danger{color:var(--danger)}
       <div class="lbl"><span>Free Heap</span><span id="hdr-heap">—</span></div>
       <div class="track"><div class="fill" id="hdr-heap-fill" style="width:0%"></div></div>
     </div>
-    <button class="iconbtn" onclick="location.href='/admin/logout'" title="Logout">&#9166;</button>
+    <button class="btn ghost sm" onclick="location.href='/admin/logout'" title="Logout">Logout</button>
   </div>
 </header>
 
 <div class="tabs">
-  <button class="on" data-v="overview" onclick="show('overview')"><span class="ico">&#9678;</span>Overview</button>
-  <button data-v="usage" onclick="show('usage')"><span class="ico">&#128200;</span>Usage</button>
-  <button data-v="playground" onclick="show('playground')"><span class="ico">&#9998;</span>Playground</button>
-  <button data-v="providers" onclick="show('providers')"><span class="ico">&#9889;</span>Providers</button>
-  <button data-v="settings" onclick="show('settings')"><span class="ico">&#9881;</span>Settings</button>
+  <button class="on" data-v="overview" onclick="show('overview')">Overview</button>
+  <button data-v="usage" onclick="show('usage')">Usage</button>
+  <button data-v="playground" onclick="show('playground')">Playground</button>
+  <button data-v="providers" onclick="show('providers')">Providers</button>
+  <button data-v="settings" onclick="show('settings')">Settings</button>
 </div>
 
 <main>
@@ -237,14 +234,14 @@ td.ok{color:var(--ok)} td.danger{color:var(--danger)}
   </section>
 
   <section class="view" id="v-providers">
-    <div class="card">
+    <div class="card form">
       <h2 id="prov-form-title">Add Provider</h2>
       <div class="frow">
         <div><label>Name</label><input id="p-name" placeholder="e.g. Groq"></div>
         <div><label>Base URL</label><input id="p-url" placeholder="https://api.groq.com/openai"></div>
       </div>
       <div class="frow">
-        <div><label>API Key</label><div class="pwrap"><input id="p-key" type="password" placeholder="sk-..."><button class="eye" onclick="toggleEye('p-key',this)">&#128065;</button></div></div>
+        <div><label>API Key</label><div class="pwrap"><input id="p-key" type="password" placeholder="sk-..."><button class="eye" onclick="toggleEye('p-key',this)">Show</button></div></div>
         <div style="min-width:120px;flex:0 0 120px"><label>Active</label>
           <label class="switch" style="margin-top:6px"><input type="checkbox" id="p-active" checked><span class="sl"></span></label>
         </div>
@@ -262,7 +259,7 @@ td.ok{color:var(--ok)} td.danger{color:var(--danger)}
   </section>
 
   <section class="view" id="v-settings">
-    <div class="card">
+    <div class="card form">
       <h2>Local API Token</h2>
       <div class="kv" id="token-kv"></div>
       <div class="row" style="margin-top:14px">
@@ -270,17 +267,17 @@ td.ok{color:var(--ok)} td.danger{color:var(--danger)}
         <button class="btn ghost" onclick="clearToken()">Clear</button>
       </div>
     </div>
-    <div class="card">
+    <div class="card form">
       <h2>Wi-Fi</h2>
       <div class="frow">
         <div><label>SSID</label><input id="w-ssid" placeholder="WiFi SSID"></div>
-        <div><label>Password</label><div class="pwrap"><input id="w-pass" type="password" placeholder="WiFi Password"><button class="eye" onclick="toggleEye('w-pass',this)">&#128065;</button></div></div>
+        <div><label>Password</label><div class="pwrap"><input id="w-pass" type="password" placeholder="WiFi Password"><button class="eye" onclick="toggleEye('w-pass',this)">Show</button></div></div>
       </div>
       <div class="row" style="margin-top:14px"><button class="btn" onclick="saveWifi()">Save &amp; Reboot</button></div>
     </div>
-    <div class="card">
+    <div class="card form">
       <h2>Admin Password</h2>
-      <label>New Password</label><div class="pwrap"><input id="a-pass" type="password" placeholder="min 3 characters"><button class="eye" onclick="toggleEye('a-pass',this)">&#128065;</button></div>
+      <label>New Password</label><div class="pwrap"><input id="a-pass" type="password" placeholder="min 3 characters"><button class="eye" onclick="toggleEye('a-pass',this)">Show</button></div>
       <div class="row" style="margin-top:14px"><button class="btn" onclick="savePassword()">Update</button></div>
     </div>
     <div class="card">
@@ -316,7 +313,7 @@ function show(v){
 
 function copyText(t){if(!t)return;navigator.clipboard.writeText(t).then(function(){toast('Copied','ok')},function(){prompt('Copy:',t)})}
 function toggleEye(id,btn){var el=document.getElementById(id);if(!el)return;
-  if(el.type==='password'){el.type='text';btn.textContent='&#128064;'}else{el.type='password';btn.textContent='&#128065;'}}
+  if(el.type==='password'){el.type='text';btn.textContent='Hide'}else{el.type='password';btn.textContent='Show'}}
 
 function fmtBytes(n){if(n>1048576)return (n/1048576).toFixed(1)+' MB';if(n>1024)return (n/1024).toFixed(1)+' KB';return n+' B'}
 function fmtNum(n){return Number(n||0).toLocaleString('en-US')}
@@ -327,12 +324,12 @@ function fmtUptime(s){var d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Mat
 function renderOverview(){
   var w=S.wifi,s=S.stats;
   var g=document.getElementById('ov-grid');g.innerHTML='';
-  function stat(l,v,cls,mono){var d=document.createElement('div');d.className='stat';
-    d.innerHTML='<div class="lbl">'+esc(l)+'</div><div class="val '+(cls||'')+(mono?' mono':'')+'">'+esc(v)+'</div>';g.appendChild(d)}
+  function stat(l,v,cls,mono,id){var d=document.createElement('div');d.className='stat';
+    d.innerHTML='<div class="lbl">'+esc(l)+'</div><div class="val '+(cls||'')+(mono?' mono':'')+'"'+(id?' id="'+id+'"':'')+'>'+esc(v)+'</div>';g.appendChild(d)}
   stat('IP Address',w.ip||'—','',true);
   stat('Wi-Fi',w.ap_mode?'AP Mode':(w.connected?(w.ssid||'Connected'):'Disconnected'),w.connected||w.ap_mode?'ok':'warn');
   stat('RSSI',w.connected?(w.rssi+' dBm'):'—');
-  stat('Uptime',fmtUptime(s.uptime_s));
+  stat('Uptime',fmtUptime(s.uptime_s),undefined,undefined,'uptime-val');
   stat('Requests',fmtNum(s.requests_total));
   stat('Avg Latency',s.avg_latency_ms?(s.avg_latency_ms+' ms'):'—');
   stat('Active Providers',S.providers.filter(function(p){return p.active}).length);
@@ -483,8 +480,8 @@ function renderProviders(){
       '<span class="name">'+esc(p.name)+'</span><span class="id">'+esc(p.id)+'</span>'+
       (p.cooling?'<span class="pill warn"><span class="dot"></span>cooling</span>':'')+
       '<span class="spacer"></span>'+
-      '<button class="btn ghost sm" onclick="pingProvider(\''+esc(p.id)+'\',this)" title="Test latency &amp; key">&#9889;</button>'+
-      '<button class="btn ghost sm" onclick="syncModels(\''+esc(p.id)+'\',this)">Sync Models</button>'+
+      '<button class="btn ghost sm" onclick="pingProvider(\''+esc(p.id)+'\',this)" title="Test latency &amp; key">Ping</button>'+
+      '<button class="btn ghost sm" onclick="syncModels(\''+esc(p.id)+'\',this)">Sync</button>'+
       '<button class="btn ghost sm" onclick="editProvider(\''+esc(p.id)+'\')">Edit</button>'+
       '<button class="btn danger sm" onclick="removeProvider(\''+esc(p.id)+'\')">Delete</button></div>'+
       '<div class="url">'+esc(p.url)+'</div>'+
@@ -540,14 +537,14 @@ async function syncModels(id,btn){
   if(btn){btn.disabled=true;btn.innerHTML='<span class="spin"></span>'}
   try{var r=await post('/api/providers/fetch',{id:id});
     if(r.ok)toast(id+': '+r.count+' models','ok');else toast(id+': '+r.error,'error');await load()}
-  catch(e){toast(e.message,'error');if(btn){btn.disabled=false;btn.textContent='Sync Models'}}
+  catch(e){toast(e.message,'error');if(btn){btn.disabled=false;btn.textContent='Sync'}}
 }
 
 async function pingProvider(id,btn){
   var el=document.getElementById('ping-'+id);if(el)el.textContent='…';
   try{
     var r=await post('/api/providers/ping',{id:id});
-    if(el){el.textContent=r.ok?('⚡ '+r.latency_ms+' ms'):('HTTP '+r.status);el.className='ping '+(r.ok?'ok':'bad')}
+    if(el){el.textContent=r.ok?(r.latency_ms+' ms'):('HTTP '+r.status);el.className='ping '+(r.ok?'ok':'bad')}
   }catch(e){if(el){el.textContent=e.message;el.className='ping bad'}}
 }
 
@@ -585,8 +582,9 @@ async function rebootDevice(){
   try{await post('/api/reboot');toast('Rebooting…','ok')}catch(e){toast(e.message,'error')}}
 
 /* ---------- render + init ---------- */
+var uptimeBase=0, uptimeAt=0;
 function render(){renderOverview();renderUsage();renderPlayground();renderProviders();renderSettings()}
-async function load(){try{S=await api('/api/state');render();connectWs()}catch(e){toast('Failed to load: '+e.message,'error')}}
+async function load(){try{S=await api('/api/state');uptimeBase=S.stats.uptime_s;uptimeAt=Date.now();render();connectWs()}catch(e){toast('Failed to load: '+e.message,'error')}}
 
 var ws;
 function connectWs(){
@@ -603,7 +601,9 @@ function connectWs(){
   var v=(location.hash||'').replace('#/','');
   if(['overview','usage','playground','providers','settings'].indexOf(v)<0)v='overview';
   show(v);load();
-  setInterval(function(){if(!S)return;api('/api/state').then(function(d){S=d;render()},function(){})},30000);
+  // Local uptime ticker — increments every second between server polls.
+  setInterval(function(){var el=document.getElementById('uptime-val');if(el&&uptimeAt)el.textContent=fmtUptime(uptimeBase+Math.floor((Date.now()-uptimeAt)/1000))},1000);
+  setInterval(function(){if(!S)return;api('/api/state').then(function(d){S=d;uptimeBase=S.stats.uptime_s;uptimeAt=Date.now();render()},function(){})},30000);
 })();
 </script>
 </body>

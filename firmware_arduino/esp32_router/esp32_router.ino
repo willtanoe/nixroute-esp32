@@ -174,23 +174,36 @@ void handleRoot(){
   String cuMask=g_customUrl.length()?(g_customUrl+" <code>"+maskKey(g_customKey)+"</code>"):"kosong";
   String html = String(R"HTML(<!doctype html><html><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>NixRoute ESP32</title><style>
 *{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#f6f6f3;color:#111}
+.shell{display:flex;min-height:100vh}
+.rail{width:72px;background:#fff;border-right:1px solid #e5e5e5;display:flex;flex-direction:column;align-items:center;padding:12px 0;gap:4px;position:sticky;top:0;height:100vh}
+.rail a{width:56px;height:56px;border-radius:12px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;font-size:10px;font-weight:500;color:#6b7280;text-decoration:none}
+.rail a.on{background:#eef6ff;color:#0ea5e9}
+.main{flex:1;min-width:0}
 .header{position:sticky;top:0;background:#fff;border-bottom:1px solid #e5e5e5;padding:12px 16px;display:flex;justify-content:space-between;align-items:center}
-.logo{display:flex;align-items:center;gap:10px;font-weight:700}.logo i{width:28px;height:28px;border-radius:8px;background:linear-gradient(135deg,#0ea5e9,#6366f1);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:14px}
-.wrap{max-width:920px;margin:20px auto;padding:0 16px;display:flex;flex-direction:column;gap:16px}
-.card{background:#fff;border:1px solid #e5e5e5;border-radius:16px;padding:16px 16px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+.logo{display:flex;align-items:center;gap:10px;font-weight:700}
+.wrap{max-width:880px;margin:16px auto;padding:0 16px;display:flex;flex-direction:column;gap:16px}
+.card{background:#fff;border:1px solid #e5e5e5;border-radius:16px;padding:16px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
 .card h2{font-size:14px;font-weight:600;margin:0 0 12px;display:flex;align-items:center;gap:8px}
-.row{display:flex;align-items:center;gap:8px;margin:8px 0}
+.row{display:flex;align-items:center;gap:8px;margin:8px 0;flex-wrap:wrap}
 .badge{font-size:11px;font-family:monospace;padding:2px 8px;border-radius:999px;background:#f0f0f0;min-width:78px;text-align:center}
-.badge.on{background:#e6f4ea;color:#137333}.mono{font-family:monospace;font-size:13px;background:#f6f6f3;border:1px solid #e5e5e5;border-radius:10px;padding:8px 10px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.badge.on{background:#e6f4ea;color:#137333}.mono{font-family:monospace;font-size:13px;background:#f6f6f3;border:1px solid #e5e5e5;border-radius:10px;padding:8px 10px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .btn{padding:7px 12px;border-radius:10px;border:1px solid #0ea5e9;background:#0ea5e9;color:#fff;font-size:13px;cursor:pointer}
 .btn.ghost{background:#fff;color:#111;border:1px solid #ddd}
-.btn.red{background:#fff;color:#d00;border:1px solid #f0c0c0}
 .input{width:100%;padding:8px 10px;border:1px solid #ddd;border-radius:10px;font-size:13px}
 .kv{display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12px;color:#666}
 .kv b{color:#111}
 .small{font-size:12px;color:#666}
 .ok{color:#137333}.warn{color:#b06000}
-</style></head><body><div class=header><div class=logo><i>N</i> NixRoute ESP32 <span style="font-weight:400;color:#666">— SuprimX · 9router fork</span></div><div><a href=/admin/logout style="font-size:13px;color:#666;text-decoration:none">Logout</a></div></div><div class=wrap>
+@media(max-width:640px){.rail{display:none}}
+</style></head><body><div class=shell><aside class=rail>
+<a href="/" class=on><span style="width:28px;height:28px;display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 500 500" width="28" height="28"><rect x="70" y="70" width="92" height="375" rx="46" fill="#0c1a30"/><rect x="338" y="70" width="92" height="375" rx="46" fill="#0c1a30"/><line x1="125" y1="130" x2="375" y2="380" stroke="#0c1a30" stroke-width="96" stroke-linecap="round"/><line x1="125" y1="130" x2="375" y2="380" stroke="#fff" stroke-width="18" stroke-linecap="round"/><circle cx="125" cy="130" r="34" fill="#0c1a30" stroke="#fff" stroke-width="14"/><circle cx="125" cy="130" r="16" fill="#00a8b5"/><circle cx="250" cy="255" r="34" fill="#0c1a30" stroke="#fff" stroke-width="14"/><circle cx="250" cy="255" r="16" fill="#00a8b5"/><circle cx="375" cy="380" r="34" fill="#0c1a30" stroke="#fff" stroke-width="14"/><circle cx="375" cy="380" r="16" fill="#00a8b5"/></svg></span>Routes</a>
+<a href="#providers"><span>🗄️</span>Providers</a>
+<a href="#policies"><span>🧩</span>Policies</a>
+<a href="#observe"><span>📊</span>Observe</a>
+<a href="#tools"><span>🔧</span>Tools</a>
+<div style="flex:1"></div>
+<a href="/admin/logout" style="color:#888;font-size:10px">Logout</a>
+</aside><div class=main><div class=header><div class=logo>NixRoute ESP32 <span style="font-weight:400;color:#666">— SuprimX · nixroute 0.5.59</span></div><div style="font-size:12px;color:#666">)HTML") + ip + R"HTML(</div></div><div class=wrap>
 )HTML")
   + "<div class=card><h2>◉ API Endpoint</h2>"
   + "<div class=row><span class='badge on'>Local</span><div class=mono>http://"+ip+"/v1</div><button class='btn ghost' onclick=\"navigator.clipboard.writeText('http://"+ip+"/v1')\">Copy</button></div>"

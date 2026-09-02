@@ -137,7 +137,8 @@ void setup(){
   server.on("/health", HTTP_OPTIONS, handleOptions);
   server.on("/v1/models", HTTP_OPTIONS, handleOptions);
   server.onNotFound(handleNotFound);
-  server.collectHeaders("Authorization",1);
+  const char* hdrKeys[] = {"Authorization"};
+  server.collectHeaders(hdrKeys, 1);
   server.begin();
   Serial.printf("HTTP :80 started heap %d\n", ESP.getFreeHeap());
   bootMs=millis();

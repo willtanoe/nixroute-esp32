@@ -3,52 +3,66 @@
 </p>
 
 <h1 align="center">NixRoute</h1>
-<p align="center"><strong>ESP32 API Gateway</strong> — a standalone OpenAI-compatible AI gateway running entirely on an ESP32.</p>
+<p align="center"><strong>ESP32 API Gateway</strong> — a standalone OpenAI-compatible AI gateway that runs entirely on an ESP32.</p>
 
 ---
 
-> Point any OpenAI SDK at `http://<esp32-ip>/v1` and route requests across multiple
-> AI providers — with smart failover, round-robin load balancing, and live token
-> usage tracking — all managed from a single self-hosted dashboard.
+> Point any OpenAI SDK at `http://<esp32-ip>/v1` and it routes your requests across
+> one or more AI providers — with automatic failover, round-robin load balancing,
+> token usage tracking, and a dashboard to manage it all from your browser.
 
 ```
 curl / Python OpenAI SDK / Claude Code / OpenCode
         │
         │  OpenAI-compatible HTTP (LAN, plain :80)
         ▼
-   ESP32-WROOM-32  ──  Arduino WebServer + WiFiClientSecure (mbedTLS)
-        │                 serialized TLS (1 upstream at a time)
+   ESP32-WROOM-32  ──  Arduino WebServer + TLS (mbedTLS) upstream
+        │
         └─► N dynamic providers (OpenAI / OpenRouter / Groq / DeepSeek / Ollama / …)
-              · smart failover on 429/5xx
-              · round-robin across providers serving the same model
+              · streaming (SSE) and non-streaming proxying
+              · automatic failover and round-robin
               · token usage + per-provider metrics
 ```
 
 ---
 
+## Why it exists
+
+NixRoute turns a $5 dev board into a tiny self-hosted gateway that sits between
+your AI tools and the providers you already pay for. All configuration lives on
+the device (NVS), the dashboard is served straight from flash, and nothing is
+hardcoded in the firmware. It is deliberately LAN-only and plain-HTTP — a private
+onion you expose over a VPN, not the open internet.
+
+---
+
 ## Features
 
-- **OpenAI-compatible** `POST /v1/chat/completions` — forwards JSON, extracts `model`
-  and `stream` (8 KB body cap → `413 Payload Too Large`).
-- **Multi-provider routing** — up to 16 upstream providers, each with a name, base URL,
-  and API key; model lists are auto-fetched and cached in NVS.
-- **Smart failover** — if a provider returns `429` (rate limit) or `5xx`/timeout, the
-  request cascades to the next candidate before returning an error.
-- **Round-robin** — when a model is served by multiple providers, requests rotate across
-  them to spread quota and rate limits.
-- **Namespaced models** — every model is exposed as `<provider>/<model>` (e.g.
-  `openrouter/gpt-4o`), so routing is unambiguous.
-- **Streaming** — `stream: true` → `text/event-stream` (SSE) passthrough with true
-  chunked forwarding (no full-body buffering).
-- **Token usage tracking** — prompt / completion / total tokens, per-model breakdown,
-  and a rolling log of recent requests (model, tokens, latency, status).
-- **Per-provider metrics** — total requests, success, failures, `429` count, and last
-  latency per provider.
-- **SPA dashboard** — dark, responsive, zero external dependencies (offline-ready on LAN).
-- **Persistence** — all config (providers, keys, Wi-Fi, token, password) in NVS via
-  `Preferences`.
-- **No hardcoded secrets** — Wi-Fi and keys are configured from the dashboard, never in code.
-- **Optional auth** — `LOCAL_API_TOKEN` Bearer (constant-time compare) when set.
+- **OpenAI-compatible** — `POST /v1/chat/completions` and `GET /v1/models` speak the
+  standard shapes, so existing SDKs and tools work without wrappers.
+- **Streaming & non-streaming** — `stream: true` responses are relayed as real SSE
+  with correct chunked framing (no full-body buffering in RAM).
+- **Multi-provider routing** — up to 16 providers, each with a name, base URL, and
+  key. Model lists are fetched automatically and cached in NVS.
+- **Smart failover** — a request cascades to the next candidate when a provider is
+  unreachable or fails; the circuit breaker parks a repeatedly-failing provider in
+  a short cooldown instead of hammering it.
+- **Round-robin** — when several providers serve the same model id, traffic is
+  rotated across them to spread quota and rate limits.
+- **Namespaced models** — models are exposed as `nx/<provider>/<model>` (for example
+  `nx/geraikita/claude-opus-5`), so routing is always unambiguous.
+- **Token usage tracking** — prompt / completion / total tokens per request, a
+  per-model breakdown, and a rolling log of recent calls. Understands both OpenAI
+  (`prompt_tokens`…) and Anthropic-style (`input_tokens`…) usage objects.
+- **Per-provider metrics** — requests, success, failures, `429`s, and last latency
+  for every provider.
+- **Glassmorphism dashboard** — a clean, responsive single-page dashboard with no
+  external dependencies, served from flash and fully usable offline on your LAN.
+- **Persistence** — providers, keys, Wi-Fi, API tokens, and the admin password live
+  in NVS via `Preferences`.
+- **Auth** — optional Bearer tokens for `/v1/*` and a random per-boot session cookie
+  for the admin area (no more forgeable static cookie).
+- **No secrets in code** — Wi-Fi and provider keys are set from the dashboard.
 
 ---
 
@@ -56,28 +70,28 @@ curl / Python OpenAI SDK / Claude Code / OpenCode
 
 | Item | Detail |
 |---|---|
-| Board | DOIT ESP32 DEVKIT V1 (ESP32-WROOM-32, 520 KB SRAM, 4 MB flash) |
-| Core | ESP32 Arduino core **3.3.x** |
+| Board | DOIT ESP32 DEVKIT V1 (ESP32-WROOM-32, 4 MB flash) |
+| Core | ESP32 Arduino core 3.3.x |
 | Toolchain | Arduino CLI or Arduino IDE 2.x |
-| Libraries | `ArduinoJson` (7.x), `Preferences`, `WebServer`, `WiFiClientSecure` (bundled) |
+| Library | `ArduinoJson` (7.x); everything else ships with the ESP32 core |
 
 ---
 
-## Repository Layout
+## Repository layout
 
 ```
 firmware_arduino/esp32_router/
-  esp32_router.ino    # firmware: HTTP server, routing, failover, NVS, Wi-Fi
-  dashboard_html.h    # dashboard SPA (HTML/CSS/JS, stored in flash via PROGMEM)
+  esp32_router.ino    # firmware: HTTP server, routing, failover, NVS, Wi-Fi, tasks
+  dashboard_html.h    # dashboard SPA (HTML/CSS/JS, compiled into flash)
 assets/
-  nixroute.svg        # brand logo (dashboard, favicon, README)
-  screenshots/        # dashboard screenshots (README)
+  nixroute.svg        # brand logo
+  screenshots/        # dashboard screenshots
 tests/scripts/        # host-side HTTP smoke tests (no hardware needed)
 ```
 
 ---
 
-## Build & Flash
+## Build & flash
 
 ### Prerequisites
 
@@ -97,49 +111,45 @@ tests/scripts/        # host-side HTTP smoke tests (no hardware needed)
    arduino-cli lib install ArduinoJson
    ```
 
-### Find your serial port
-
-Replace `<PORT>` below with your board's port (e.g. `COM11` on Windows,
-`/dev/ttyUSB0` on Linux, `/dev/cu.usbserial-*` on macOS):
-
-```bash
-arduino-cli board list
-```
-
 ### Compile & upload
+
+Find your port with `arduino-cli board list` (e.g. `COM11` on Windows), then:
 
 ```bash
 # board: DOIT ESP32 DEVKIT V1 → FQBN esp32:esp32:esp32
-arduino-cli compile --fqbn esp32:esp32:esp32 firmware_arduino/esp32_router/esp32_router.ino
-arduino-cli upload  --fqbn esp32:esp32:esp32 --port <PORT> firmware_arduino/esp32_router/esp32_router.ino
-arduino-cli monitor --port <PORT> --config baudrate=115200
+arduino-cli compile --fqbn esp32:esp32:esp32 firmware_arduino/esp32_router
+arduino-cli upload  --fqbn esp32:esp32:esp32 --port COM11 firmware_arduino/esp32_router
+arduino-cli monitor --port COM11 --config baudrate=115200
 ```
+
+Typical size (ESP32 core 3.3.11, default 4 MB flash):
+
+```
+Sketch uses 1198236 bytes (91%) of program storage space.
+Global variables use 56936 bytes (17%), leaving 270744 bytes.
+```
+
+The sketch fits the default partition layout. If you ever grow it past that,
+compile with the Huge APP partition scheme
+(`--fqbn esp32:esp32:esp32:PartitionScheme=huge_app`) — note that changing the
+partition table erases existing NVS settings.
 
 ### Using the Arduino IDE
 
-1. Open the Arduino IDE and install the **esp32** board package via
-   *File → Preferences → Additional boards manager URLs*:
-   `https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json`,
-   then *Tools → Board → Boards Manager* → search **esp32** → install.
-2. Install **ArduinoJson** via *Tools → Manage Libraries* → search **ArduinoJson** → install.
+1. Install the **esp32** board package (*Tools → Board → Boards Manager*, additional
+   URL `https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json`).
+2. Install **ArduinoJson** (*Tools → Manage Libraries*).
 3. Open `firmware_arduino/esp32_router/esp32_router.ino`.
-4. Select the board *Tools → Board → esp32 → ESP32 Dev Module* (DOIT ESP32 DEVKIT V1).
-5. Select your port *Tools → Port*.
-6. Click **Upload**, then open the Serial Monitor at `115200` baud.
-
-Typical build size (ESP32 core 3.3.11):
-
-```
-Sketch uses 1117960 bytes (85%) of program storage space.
-Global variables use 53864 bytes (16%) of dynamic memory, leaving 273816 bytes.
-```
+4. *Tools → Board → esp32 → ESP32 Dev Module*, pick your port, **Upload**, then open
+   the Serial Monitor at `115200` baud.
 
 ### First boot / Wi-Fi
 
-SSID/password live in NVS (`wifi_ssid` / `wifi_pass`), set from **Settings → Wi-Fi** —
-never hardcoded. On first boot with no Wi-Fi configured, NixRoute starts an access
-point **`NixRoute-Setup`** (password `12345678`, IP `192.168.4.1`) so you can reach the
-dashboard and set your Wi-Fi.
+On first boot there is no Wi-Fi configured, so NixRoute opens an access point
+**`NixRoute-Setup`** (password `12345678`, IP `192.168.4.1`). Connect to it, open
+`http://192.168.4.1/`, sign in with the default admin password `123456`, and set
+your Wi-Fi from *Settings*. The device reboots into station mode and prints its IP
+on the serial monitor.
 
 ---
 
@@ -149,34 +159,26 @@ Open `http://<esp32-ip>/` and sign in (default password `123456`).
 
 | View | Purpose |
 |---|---|
-| **Overview** | IP, Wi-Fi status, RSSI, uptime, heap, request counters, provider health |
-| **Usage** | Token totals, per-model breakdown, recent requests log |
-| **Providers** | Add / edit / remove providers, toggle active, sync models |
-| **Settings** | Local API token, Wi-Fi, admin password |
+| **Overview** | Device status, your endpoint + the API token in use, provider health, then the client-setup snippets at the bottom |
+| **Usage** | Token totals, per-model breakdown, live recent requests |
+| **Playground** | Try a streaming prompt against any active provider |
+| **Providers** | Add / edit / delete providers, toggle active, ping, sync models |
+| **Settings** | Local API tokens, Wi-Fi, admin password |
 
 ### Providers
 
-Add a provider with a **name**, **base URL**, and **API key**. On save the firmware
-immediately calls the provider's `GET /models` and caches the result, exposing each model
-as `<provider>/<model>`. Leave the key empty to skip fetching (routing then falls back to
-other providers). Use the **active** toggle to disable a provider without deleting it.
+Add a provider with a **name**, **base URL**, and **API key**. The URL may be
+`https://` or plain `http://`. On save the firmware calls the provider's
+`GET /v1/models` and caches the result, exposing each model as
+`nx/<provider-id>/<model>`. The provider id is derived from the name; if two names
+would slug to the same id the API returns `409` instead of silently overwriting.
+To **edit** an existing provider the request must carry its `id` (the dashboard does
+this automatically) — leave the key blank to keep the stored one. Use the **active**
+toggle to disable a provider without deleting it, and **Ping / Sync** to test
+connectivity and refresh the model cache.
 
-Auth: `POST /admin/login` sets an `esp_auth=ok` cookie (24 h); `GET /admin/logout` clears it.
-
----
-
-## Screenshots
-
-<table>
-  <tr>
-    <td align="center"><img src="assets/screenshots/1.png" alt="Overview" width="400"><br><strong>Overview</strong></td>
-    <td align="center"><img src="assets/screenshots/2.png" alt="Usage" width="400"><br><strong>Usage</strong></td>
-  </tr>
-  <tr>
-    <td align="center"><img src="assets/screenshots/3.png" alt="Providers" width="400"><br><strong>Providers</strong></td>
-    <td align="center"><img src="assets/screenshots/4.png" alt="Settings" width="400"><br><strong>Settings</strong></td>
-  </tr>
-</table>
+Auth uses a random per-boot session cookie (`esp_auth`, `HttpOnly`, 24 h). Log out
+from the top-right button.
 
 ---
 
@@ -186,26 +188,33 @@ Auth: `POST /admin/login` sets an `esp_auth=ok` cookie (24 h); `GET /admin/logou
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `GET` | `/health` | none | device status + per-provider metrics + token totals |
-| `GET` | `/v1/models` | Bearer if token set | OpenAI `list` shape, models namespaced as `<provider>/<model>` |
-| `POST` | `/v1/chat/completions` | Bearer if token set | proxy with failover + round-robin; `413` if body > 8 KB |
+| `GET` | `/health` | none | device + connection + token totals + per-provider metrics |
+| `GET` | `/v1/models` | Bearer if tokens set | OpenAI `list`; ids as `nx/<provider>/<model>` |
+| `POST` | `/v1/chat/completions` | Bearer if tokens set | proxy with failover + round-robin; streaming supported |
 
-### Admin (JSON, cookie-authenticated)
+`/v1/chat/completions` is single-flight on the device: while one request is being
+relayed, a second one gets `503 {"error":{"message":"proxy busy, try again"}}`.
+
+### Admin (JSON, session-cookie-authenticated)
 
 | Method | Path | Body | Description |
 |---|---|---|---|
-| `GET` | `/api/state` | — | full state: providers, metrics, usage, token, Wi-Fi, stats |
-| `POST` | `/api/providers` | `{name,url,key,active}` | add/update provider (id slugified from name) + auto-fetch models |
-| `POST` | `/api/providers/remove` | `{id}` | remove a provider (and its model cache) |
-| `POST` | `/api/providers/toggle` | `{id,active}` | enable/disable a provider |
-| `POST` | `/api/providers/fetch` | `{id}` | fetch + cache a provider's models |
-| `POST` | `/api/token/generate` | — | rotate local token |
-| `POST` | `/api/token/clear` | — | clear local token |
-| `POST` | `/api/password` | `{password}` | change admin password |
-| `POST` | `/api/wifi` | `{ssid,pass}` | set Wi-Fi + reboot |
+| `GET` | `/api/state` | — | full state: providers, metrics, usage, tokens, Wi-Fi, stats |
+| `GET` | `/admin/status` | — | same as `/health` but requires an admin session |
+| `POST` | `/api/providers` | `{id?,name,url,key,active}` | add provider, or edit when `id` given; auto-fetches models |
+| `POST` | `/api/providers/remove` | `{id}` | delete a provider (and its model cache) |
+| `POST` | `/api/providers/toggle` | `{id,active}` | enable / disable |
+| `POST` | `/api/providers/fetch` | `{id}` | refresh + cache the provider model list |
+| `POST` | `/api/providers/ping` | `{id}` | measure latency + HTTP status of a provider |
+| `POST` | `/api/token/generate` | — | create a client token (up to 5) |
+| `POST` | `/api/token/delete` | `{token}` | revoke one token |
+| `POST` | `/api/token/clear` | — | revoke all client tokens |
+| `POST` | `/api/password` | `{password}` | change the admin password |
+| `POST` | `/api/wifi` | `{ssid,pass}` | save Wi-Fi and reboot |
+| `POST` | `/api/reboot` | — | reboot the device |
 
-Responses include `Access-Control-Allow-Origin: *` and `Cache-Control: no-store`. Errors are
-OpenAI-shaped: `{"error":{"message":"..."}}`.
+Responses carry `Access-Control-Allow-Origin: *` and `Cache-Control: no-store`.
+Errors are OpenAI-shaped: `{"error":{"message":"…"}}`.
 
 ### Examples
 
@@ -216,31 +225,55 @@ curl -H "Authorization: Bearer $TOKEN" http://<ip>/v1/models
 
 curl -H "Authorization: Bearer $TOKEN" http://<ip>/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"openrouter/gpt-4o","messages":[{"role":"user","content":"hi"}]}'
+  -d '{"model":"nx/geraikita/claude-opus-5","messages":[{"role":"user","content":"hi"}]}'
 
 # OpenAI SDK
-OPENAI_BASE_URL=http://<ip>/v1 OPENAI_API_KEY=$TOKEN python -c "from openai import OpenAI; c=OpenAI(); print(c.chat.completions.create(model='openrouter/gpt-4o', messages=[{'role':'user','content':'hi'}]).choices[0].message.content)"
+OPENAI_BASE_URL=http://<ip>/v1 OPENAI_API_KEY=$TOKEN python - <<'EOF'
+from openai import OpenAI
+c = OpenAI()
+r = c.chat.completions.create(model="nx/geraikita/claude-opus-5",
+                              messages=[{"role": "user", "content": "hi"}])
+print(r.choices[0].message.content)
+EOF
 ```
 
 ---
 
-## Security Notes
+## Security notes
 
-- **LAN-only plain HTTP** — do not port-forward. Use a VPN (WireGuard/Tailscale) for remote access.
-- Provider keys live only in ESP32 NVS; never echoed in any endpoint or log (masked `***`).
-- `LOCAL_API_TOKEN` when set → all `/v1/*` require `Authorization: Bearer <token>` (constant-time compare).
-- Physical flash read exposes NVS without flash encryption (documented as a future step).
+- **LAN-only, plain HTTP** — don't port-forward it. Reach it remotely over a VPN
+  (WireGuard/Tailscale) instead.
+- Provider keys live in NVS and are never returned in full by any endpoint (masked).
+- When at least one local token exists, every `/v1/*` call needs
+  `Authorization: Bearer <token>` (compared in constant time).
+- The admin area uses a random per-boot session cookie, and the admin password is
+  never printed to the serial log.
+- Flash encryption is not enabled; a device in someone's hands can be read. Treat
+  the board like a physical key.
 
 ---
 
 ## Testing
 
+Host-side smoke tests (no hardware changes needed; pass your board's IP):
+
 ```bash
-# host-side smoke tests (replace IP)
 python tests/scripts/test_health.py --host 192.168.110.187
-python tests/scripts/test_openai_compat.py --host 192.168.110.187 --model openrouter/gpt-4o
+python tests/scripts/test_openai_compat.py --host 192.168.110.187 --model nx/geraikita/claude-opus-5 --token "$TOKEN" --stream
 python tests/scripts/test_admin_api.py --host 192.168.110.187 --password 123456
 ```
+
+---
+
+## Known limitations
+
+- One chat request at a time (single-flight) — by design, to keep the proxy and the
+  dashboard responsive on a small MCU; overlapping requests get `503`.
+- The WebServer task and the proxy task share the client socket while a response
+  streams. It works, but a client that drops mid-stream is detected via write
+  failures (`delivered=0` in the serial log) rather than being handled instantly.
+- Unbuffered non-streaming replies are capped (~192 KB) so a runaway completion
+  can't OOM the gateway.
 
 ---
 

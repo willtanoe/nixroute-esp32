@@ -285,17 +285,55 @@ void recordProviderResult(const String& id, bool ok, int code) {
   statsUnlock();
 }
 
+// Returns the index of the '}' that closes the object whose opening '{' is at
+// `open`, walking string literals (incl. escapes) so braces inside strings are
+// not counted. Returns -1 when the JSON is truncated.
+int matchJsonObject(const String& s, int open) {
+  int depth = 0;
+  bool inStr = false;
+  for (int i = open; i < (int)s.length(); i++) {
+    char c = s[i];
+    if (inStr) {
+      if (c == '\\') i++;
+      else if (c == '"') inStr = false;
+      continue;
+    }
+    if (c == '"') inStr = true;
+    else if (c == '{') depth++;
+    else if (c == '}') {
+      if (--depth == 0) return i;
+    }
+  }
+  return -1;
+}
+
+// Extracts and parses the last "usage" object seen in the buffered text
+// (which may be a plain JSON body or an SSE tail). Handles both OpenAI token
+// names (prompt_tokens/completion_tokens/total_tokens) and Anthropic-style
+// names (input_tokens/output_tokens).
 bool parseUsage(const String& s, uint32_t& pt, uint32_t& ct, uint32_t& tt) {
-  int u = s.indexOf("\"usage\"");
+  pt = ct = tt = 0;
+  int u = s.lastIndexOf("\"usage\"");
   if (u < 0) return false;
-  int brace = s.indexOf('{', u);
-  if (brace < 0) return false;
+  int colon = s.indexOf(':', u);
+  if (colon < 0) return false;
+  int v = colon + 1;
+  while (v < (int)s.length() && (s[v] == ' ' || s[v] == '\t' || s[v] == '\r' || s[v] == '\n')) v++;
+  if (v >= (int)s.length() || s[v] != '{') return false;
+  int close = matchJsonObject(s, v);
+  if (close < 0) return false;
+
   JsonDocument doc;
-  DeserializationError err = deserializeJson(doc, s.substring(brace));
-  if (err) return false;
+  if (deserializeJson(doc, s.substring(v, close + 1))) return false;
+
   pt = doc["prompt_tokens"] | 0;
   ct = doc["completion_tokens"] | 0;
   tt = doc["total_tokens"] | 0;
+  if (pt == 0 && ct == 0 && tt == 0) {
+    // Anthropic passthrough: input_tokens/output_tokens
+    pt = doc["input_tokens"] | 0;
+    ct = doc["output_tokens"] | 0;
+  }
   if (!tt && (pt || ct)) tt = pt + ct;
   return tt > 0 || pt > 0 || ct > 0;
 }
@@ -764,7 +802,7 @@ bool streamResponseManual(T& client, bool chunked, size_t contentLength,
   c.print("Connection: close\r\n\r\n");
   uint8_t buf[1024];
   String tail;
-  tail.reserve(2048);
+  tail.reserve(4096);
   size_t remaining = contentLength;
   unsigned long lastData = millis();
 
@@ -776,7 +814,7 @@ bool streamResponseManual(T& client, bool chunked, size_t contentLength,
     c.print("\r\n");
     c.flush();
     tail.concat((const char*)p, n);
-    if (tail.length() > 2048) tail.remove(0, tail.length() - 2048);
+    if (tail.length() > 4096) tail.remove(0, tail.length() - 4096);
     return true;
   };
 

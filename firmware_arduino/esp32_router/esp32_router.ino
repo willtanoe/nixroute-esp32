@@ -7,6 +7,12 @@
 //   GET  /health                (device + provider status + usage)
 //   GET  /                      (dashboard SPA from dashboard_html.h)
 //
+// Dual-core FreeRTOS task pinning:
+//   Core 0 — WebServer task (dashboard, admin API, auth, mDNS-ready)
+//   Core 1 — Proxy engine task (HTTPS/mbedTLS upstream + SSE streaming)
+// A FreeRTOS queue hands each chat request (with its client socket) from Core 0
+// to Core 1, so a long stream never blocks the dashboard.
+//
 // Memory-safe: 8 KB request cap (413), chunked SSE passthrough (no full-body
 // buffering), config persisted in NVS via Preferences.
 
@@ -17,14 +23,19 @@
 #include <ArduinoJson.h>
 #include <Preferences.h>
 #include <esp_random.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "dashboard_html.h"
 
-#define VERSION          "3.1.0"
+#define VERSION          "3.2.0"
 #define MAX_PROVIDERS    16
 #define MAX_MODELS_CACHE 200
 #define MAX_BODY         8192
 #define MAX_USAGE_LOG    20
 #define MAX_USAGE_MODELS 32
+#define PROXY_QUEUE_LEN  4
 
 // ---------------------------------------------------------------------------
 // Data model
@@ -58,6 +69,20 @@ struct ModelUsage {
   uint32_t tokens;
 };
 
+// A chat request handed from the WebServer task (Core 0) to the proxy task
+// (Core 1). Provider data is snapshotted at enqueue time so the proxy task
+// never touches the provider array (which admin mutates on Core 0).
+struct ProviderSnap { String id, name, url, key; };
+struct ProxyJob {
+  String body;
+  String model;         // requested model (for logging)
+  String upstreamModel; // un-namespaced model to send upstream
+  bool isStream;
+  int n;
+  ProviderSnap providers[MAX_PROVIDERS];
+  NetworkClient client;
+};
+
 Preferences prefs;
 String g_wifiSsid, g_wifiPass, g_localToken, g_adminPass;
 Provider g_providers[MAX_PROVIDERS];
@@ -78,9 +103,17 @@ int g_usageCount = 0;
 ModelUsage g_modelUsage[MAX_USAGE_MODELS];
 int g_modelUsageCount = 0;
 
+// FreeRTOS primitives
+QueueHandle_t g_proxyQueue = NULL;
+SemaphoreHandle_t g_statsMutex = NULL;
+TaskHandle_t g_webTask = NULL, g_proxyTask = NULL;
+
 // ---------------------------------------------------------------------------
 // Small helpers
 // ---------------------------------------------------------------------------
+void statsLock() { if (g_statsMutex) xSemaphoreTake(g_statsMutex, portMAX_DELAY); }
+void statsUnlock() { if (g_statsMutex) xSemaphoreGive(g_statsMutex); }
+
 String maskKey(const String& k) {
   if (k.length() == 0) return "";
   if (k.length() <= 8) return "***";
@@ -110,7 +143,6 @@ String slugify(const String& s) {
   return r;
 }
 
-// Normalize a base URL to its "/v1" root (strip /chat/completions, trailing slashes).
 String apiRoot(const String& url) {
   String u = url;
   if (u.endsWith("/chat/completions")) u = u.substring(0, u.length() - 17);
@@ -124,11 +156,27 @@ int findProvider(const String& id) {
   return -1;
 }
 
+const char* reasonPhrase(int code) {
+  switch (code) {
+    case 200: return "OK";
+    case 400: return "Bad Request";
+    case 401: return "Unauthorized";
+    case 404: return "Not Found";
+    case 413: return "Payload Too Large";
+    case 429: return "Too Many Requests";
+    case 500: return "Internal Server Error";
+    case 502: return "Bad Gateway";
+    case 503: return "Service Unavailable";
+    default:  return "Error";
+  }
+}
+
 // ---------------------------------------------------------------------------
-// Usage tracking
+// Usage tracking (mutex-guarded; written by proxy task, read by admin/health)
 // ---------------------------------------------------------------------------
 void recordUsage(const char* model, uint32_t pt, uint32_t ct, uint32_t tt,
                  uint32_t lat, bool ok) {
+  statsLock();
   UsageEntry& e = g_usageLog[g_usageWrite];
   strncpy(e.model, model, sizeof(e.model) - 1);
   e.model[sizeof(e.model) - 1] = 0;
@@ -148,6 +196,7 @@ void recordUsage(const char* model, uint32_t pt, uint32_t ct, uint32_t tt,
       if (strcmp(g_modelUsage[i].model, model) == 0) {
         g_modelUsage[i].requests++;
         g_modelUsage[i].tokens += tt;
+        statsUnlock();
         return;
       }
     }
@@ -159,9 +208,23 @@ void recordUsage(const char* model, uint32_t pt, uint32_t ct, uint32_t tt,
       m.tokens = tt;
     }
   }
+  statsUnlock();
 }
 
-// Extract usage from a JSON (or SSE tail) string. Returns true if found.
+void bumpMetrics(const String& id, bool ok, int code, uint32_t lat) {
+  statsLock();
+  for (int i = 0; i < g_providerCount; i++) {
+    if (g_providers[i].id == id) {
+      g_providers[i].m.total++;
+      g_providers[i].m.lastLatencyMs = lat;
+      if (ok) g_providers[i].m.success++;
+      else { g_providers[i].m.failed++; if (code == 429) g_providers[i].m.rateLimited++; }
+      break;
+    }
+  }
+  statsUnlock();
+}
+
 bool parseUsage(const String& s, uint32_t& pt, uint32_t& ct, uint32_t& tt) {
   int u = s.indexOf("\"usage\"");
   if (u < 0) return false;
@@ -219,7 +282,6 @@ void loadProviders() {
       }
     }
   }
-  // auto-heal: regenerate any id that drifted from slugify(name)
   bool healed = false;
   for (int i = 0; i < g_providerCount; i++) {
     String sid = slugify(g_providers[i].name);
@@ -277,8 +339,6 @@ bool modelInProvider(int idx, const String& model) {
   return false;
 }
 
-// Fetch a provider's model list (GET /models) and cache it.
-// Returns count (>=0) or -1 on error (message in g_lastFetchError).
 int fetchModels(int idx) {
   g_lastFetchError = "";
   String root = apiRoot(g_providers[idx].url);
@@ -376,14 +436,11 @@ bool requireAdmin() {
 }
 
 // ---------------------------------------------------------------------------
-// Routing engine
+// Routing engine (runs on Core 0, in the WebServer task)
 // ---------------------------------------------------------------------------
-// Resolve a model to a list of candidate provider indices (round-robin ready).
-// Returns candidate count; fills candidates[] and (optionally) upstreamModel.
 int resolveCandidates(const String& model, int* candidates, String* upstreamModel) {
   if (upstreamModel) *upstreamModel = model;
 
-  // 1. explicit "<provider>/<model>" namespace
   int slash = model.indexOf('/');
   if (slash > 0) {
     String prefix = model.substring(0, slash);
@@ -395,13 +452,11 @@ int resolveCandidates(const String& model, int* candidates, String* upstreamMode
     }
   }
 
-  // 2. exact match across providers (round-robin among matches)
   int n = 0;
   for (int i = 0; i < g_providerCount; i++)
     if (g_providers[i].active && modelInProvider(i, model)) candidates[n++] = i;
   if (n) { if (upstreamModel) *upstreamModel = model; return n; }
 
-  // 3. "<provider>-" prefix
   for (int i = 0; i < g_providerCount; i++) {
     String p = g_providers[i].id + "-";
     if (model.startsWith(p)) {
@@ -413,7 +468,6 @@ int resolveCandidates(const String& model, int* candidates, String* upstreamMode
     }
   }
 
-  // 4. fallback: all active providers that have a key
   n = 0;
   for (int i = 0; i < g_providerCount; i++)
     if (g_providers[i].active && g_providers[i].key.length()) candidates[n++] = i;
@@ -422,7 +476,168 @@ int resolveCandidates(const String& model, int* candidates, String* upstreamMode
 }
 
 // ---------------------------------------------------------------------------
-// Public API (OpenAI-compatible)
+// Raw HTTP response writers (used by the proxy task on Core 1)
+// ---------------------------------------------------------------------------
+void writeJson(NetworkClient& c, int code, const String& body) {
+  c.printf("HTTP/1.1 %d %s\r\n", code, reasonPhrase(code));
+  c.print("Content-Type: application/json\r\n");
+  c.print("Access-Control-Allow-Origin: *\r\n");
+  c.print("Cache-Control: no-store\r\n");
+  c.printf("Content-Length: %d\r\n", body.length());
+  c.print("Connection: close\r\n");
+  c.print("\r\n");
+  c.write(reinterpret_cast<const uint8_t*>(body.c_str()), body.length());
+  c.flush();
+}
+
+void writeErrorRaw(NetworkClient& c, int code, const String& msg) {
+  JsonDocument doc;
+  doc["error"]["message"] = msg;
+  String out;
+  serializeJson(doc, out);
+  writeJson(c, code, out);
+}
+
+void writeStream(NetworkClient& c, HTTPClient& http, uint32_t* pt, uint32_t* ct, uint32_t* tt) {
+  c.print("HTTP/1.1 200 OK\r\n");
+  c.print("Content-Type: text/event-stream\r\n");
+  c.print("Access-Control-Allow-Origin: *\r\n");
+  c.print("Cache-Control: no-cache\r\n");
+  c.print("Transfer-Encoding: chunked\r\n");
+  c.print("Connection: close\r\n");
+  c.print("\r\n");
+  NetworkClient* stream = http.getStreamPtr();
+  uint8_t buf[1024];
+  String tail;
+  tail.reserve(2048);
+  if (stream) {
+    while (stream->connected() || stream->available()) {
+      size_t avail = stream->available();
+      if (avail) {
+        if (avail > sizeof(buf)) avail = sizeof(buf);
+        int r = stream->read(buf, avail);
+        if (r > 0) {
+          c.printf("%x\r\n", (unsigned)r);
+          c.write(buf, r);
+          c.print("\r\n");
+          c.flush();
+          tail.concat(reinterpret_cast<const char*>(buf), (unsigned)r);
+          if (tail.length() > 2048) tail.remove(0, tail.length() - 2048);
+        }
+      } else {
+        delay(1);
+      }
+    }
+  }
+  c.print("0\r\n\r\n");
+  c.flush();
+  if (!parseUsage(tail, *pt, *ct, *tt)) { *pt = *ct = *tt = 0; }
+}
+
+// ---------------------------------------------------------------------------
+// Proxy engine (runs on Core 1)
+// ---------------------------------------------------------------------------
+int doUpstream(const ProviderSnap& p, const String& sendBody, bool isStream,
+               NetworkClient& c, const String& fullModel) {
+  String url = apiRoot(p.url) + "/chat/completions";
+  unsigned long t0 = millis();
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  if (!http.begin(client, url)) {
+    bumpMetrics(p.id, false, 0, 0);
+    recordUsage(fullModel.c_str(), 0, 0, 0, 0, false);
+    return 0;
+  }
+  http.addHeader("Content-Type", "application/json");
+  if (p.key.length()) http.addHeader("Authorization", "Bearer " + p.key);
+  http.addHeader("Accept", isStream ? "text/event-stream" : "application/json");
+  if (p.id == "openrouter") {
+    http.addHeader("HTTP-Referer", "http://" + WiFi.localIP().toString());
+    http.addHeader("X-Title", "NixRoute");
+  }
+  http.setTimeout(30000);
+  int code = http.POST(sendBody);
+  unsigned long lat = millis() - t0;
+
+  bool ok = (code >= 200 && code < 300);
+  if (ok) {
+    uint32_t pt = 0, ct = 0, tt = 0;
+    if (isStream) {
+      writeStream(c, http, &pt, &ct, &tt);
+    } else {
+      String resp = http.getString();
+      parseUsage(resp, pt, ct, tt);
+      writeJson(c, 200, resp.length() ? resp : "{}");
+    }
+    recordUsage(fullModel.c_str(), pt, ct, tt, lat, true);
+  } else {
+    http.getString();  // drain body, free connection
+    recordUsage(fullModel.c_str(), 0, 0, 0, lat, false);
+  }
+  http.end();
+  bumpMetrics(p.id, ok, code, lat);
+  return code;
+}
+
+void processProxyJob(ProxyJob* job) {
+  NetworkClient& c = job->client;
+
+  // build the upstream body once (model rewrite + stream_options)
+  String sendBody = job->body;
+  int mi = sendBody.indexOf("\"model\"");
+  if (mi >= 0) {
+    int q1 = sendBody.indexOf('"', mi + 7);
+    int q2 = q1 >= 0 ? sendBody.indexOf('"', q1 + 1) : -1;
+    if (q1 > 0 && q2 > q1)
+      sendBody = sendBody.substring(0, q1 + 1) + job->upstreamModel + sendBody.substring(q2);
+  }
+  if (job->isStream && sendBody.indexOf("stream_options") < 0) {
+    int last = sendBody.lastIndexOf('}');
+    if (last > 0)
+      sendBody = sendBody.substring(0, last) + ",\"stream_options\":{\"include_usage\":true}" + sendBody.substring(last);
+  }
+
+  int lastCode = 0;
+  bool ok = false;
+  unsigned long t0 = millis();
+  uint32_t start = g_rr++ % job->n;
+  for (int k = 0; k < job->n; k++) {
+    const ProviderSnap& p = job->providers[(start + k) % job->n];
+    String fullModel = p.id + "/" + job->upstreamModel;
+    int code = doUpstream(p, sendBody, job->isStream, c, fullModel);
+    if (code >= 200 && code < 300) { ok = true; break; }
+    lastCode = code;
+    if (code == 429 || code >= 500 || code == 0) continue;
+    break;
+  }
+
+  if (ok) {
+    g_reqOk++;
+    g_latencySum += millis() - t0;
+  } else {
+    g_reqFail++;
+    if (lastCode == 429) writeErrorRaw(c, 429, "all providers rate-limited");
+    else if (lastCode >= 500 || lastCode == 0) writeErrorRaw(c, 502, "all providers failed");
+    else writeErrorRaw(c, lastCode > 0 ? lastCode : 502, "upstream error");
+  }
+  Serial.printf("chat model=%s candidates=%d code=%d heap=%d core=%d\n",
+                job->model.c_str(), job->n, lastCode, ESP.getFreeHeap(), xPortGetCoreID());
+  c.stop();
+}
+
+void proxyTask(void*) {
+  for (;;) {
+    ProxyJob* job = NULL;
+    if (xQueueReceive(g_proxyQueue, &job, portMAX_DELAY) == pdTRUE) {
+      processProxyJob(job);
+      delete job;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Public API (OpenAI-compatible) — Core 0
 // ---------------------------------------------------------------------------
 void handleHealth() {
   String ip = WiFi.localIP().toString();
@@ -446,6 +661,7 @@ void handleHealth() {
   doc["tokens"]["total"] = g_totalTokens;
 
   JsonArray provs = doc["provider_metrics"].to<JsonArray>();
+  statsLock();
   for (int i = 0; i < g_providerCount; i++) {
     JsonObject o = provs.add<JsonObject>();
     o["id"] = g_providers[i].id;
@@ -456,6 +672,7 @@ void handleHealth() {
     o["rate_limited"] = g_providers[i].m.rateLimited;
     o["last_latency_ms"] = g_providers[i].m.lastLatencyMs;
   }
+  statsUnlock();
   String out;
   serializeJson(doc, out);
   sendJson(200, out);
@@ -502,108 +719,10 @@ void handleOptions() {
   server.send(204, "", "");
 }
 
-// Stream the upstream response body directly to the client (chunked SSE),
-// while capturing the trailing data to extract token usage.
-void streamResponse(HTTPClient& http, uint32_t* pt, uint32_t* ct, uint32_t* tt) {
-  server.sendHeader("Access-Control-Allow-Origin", "*");
-  server.sendHeader("Cache-Control", "no-cache");
-  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
-  server.send(200, "text/event-stream", "");
-  NetworkClient* stream = http.getStreamPtr();
-  uint8_t buf[1024];
-  String tail;
-  tail.reserve(2048);
-  if (stream) {
-    while (stream->connected() || stream->available()) {
-      size_t avail = stream->available();
-      if (avail) {
-        if (avail > sizeof(buf)) avail = sizeof(buf);
-        int r = stream->read(buf, avail);
-        if (r > 0) {
-          server.sendContent(reinterpret_cast<const char*>(buf), (size_t)r);
-          tail.concat(reinterpret_cast<const char*>(buf), (unsigned)r);
-          if (tail.length() > 2048) tail.remove(0, tail.length() - 2048);
-        }
-      } else {
-        delay(1);
-      }
-    }
-  }
-  if (!parseUsage(tail, *pt, *ct, *tt)) { *pt = *ct = *tt = 0; }
-}
-
-// Attempt one upstream request. Returns HTTP status code.
-int attemptRequest(int idx, const String& body, const String& upstreamModel, bool isStream) {
-  Provider& p = g_providers[idx];
-  String url = apiRoot(p.url) + "/chat/completions";
-
-  // rewrite the "model" field to the upstream (un-namespaced) name
-  String sendBody = body;
-  int mi = sendBody.indexOf("\"model\"");
-  if (mi >= 0) {
-    int q1 = sendBody.indexOf('"', mi + 7);
-    int q2 = q1 >= 0 ? sendBody.indexOf('"', q1 + 1) : -1;
-    if (q1 > 0 && q2 > q1)
-      sendBody = sendBody.substring(0, q1 + 1) + upstreamModel + sendBody.substring(q2);
-  }
-  // request usage in streaming responses
-  if (isStream && sendBody.indexOf("stream_options") < 0) {
-    int last = sendBody.lastIndexOf('}');
-    if (last > 0)
-      sendBody = sendBody.substring(0, last) + ",\"stream_options\":{\"include_usage\":true}" + sendBody.substring(last);
-  }
-
-  String fullModel = p.id + "/" + upstreamModel;
-  unsigned long t0 = millis();
-  WiFiClientSecure client;
-  client.setInsecure();
-  HTTPClient http;
-  if (!http.begin(client, url)) {
-    p.m.total++;
-    p.m.failed++;
-    recordUsage(fullModel.c_str(), 0, 0, 0, 0, false);
-    return 0;  // connection failure → treat as 0 (fail over)
-  }
-  http.addHeader("Content-Type", "application/json");
-  if (p.key.length()) http.addHeader("Authorization", "Bearer " + p.key);
-  http.addHeader("Accept", isStream ? "text/event-stream" : "application/json");
-  if (p.id == "openrouter") {
-    http.addHeader("HTTP-Referer", "http://" + WiFi.localIP().toString());
-    http.addHeader("X-Title", "NixRoute");
-  }
-  http.setTimeout(30000);
-  int code = http.POST(sendBody);
-  unsigned long lat = millis() - t0;
-
-  p.m.lastLatencyMs = lat;
-  p.m.total++;
-
-  if (code >= 200 && code < 300) {
-    p.m.success++;
-    uint32_t pt = 0, ct = 0, tt = 0;
-    if (isStream) {
-      streamResponse(http, &pt, &ct, &tt);
-    } else {
-      String resp = http.getString();
-      parseUsage(resp, pt, ct, tt);
-      sendJson(200, resp.length() ? resp : "{}");
-    }
-    recordUsage(fullModel.c_str(), pt, ct, tt, lat, true);
-  } else {
-    p.m.failed++;
-    if (code == 429) p.m.rateLimited++;
-    http.getString();  // drain body, free connection
-    recordUsage(fullModel.c_str(), 0, 0, 0, lat, false);
-  }
-  http.end();
-  return code;
-}
-
 void handleChat() {
   g_reqTotal++;
   if (!authCheck()) { g_reqFail++; sendError(401, "unauthorized"); return; }
 
-  // early payload cap via Content-Length
   if (server.hasHeader("Content-Length")) {
     long cl = server.header("Content-Length").toInt();
     if (cl > MAX_BODY) { g_reqFail++; sendError(413, "payload too large"); return; }
@@ -612,7 +731,6 @@ void handleChat() {
   if (body.length() == 0) { g_reqFail++; sendError(400, "empty body"); return; }
   if (body.length() > MAX_BODY) { g_reqFail++; sendError(413, "payload too large"); return; }
 
-  // extract model
   String model = "";
   int mi = body.indexOf("\"model\"");
   if (mi >= 0) {
@@ -629,45 +747,35 @@ void handleChat() {
   int n = resolveCandidates(model, candidates, &upstreamModel);
   if (n == 0) { g_reqFail++; sendError(500, "no active provider available"); return; }
 
-  // round-robin starting offset across the candidate set
-  int start = g_rr++ % n;
-
-  int lastCode = 0;
-  bool ok = false;
-  unsigned long t0 = millis();
+  ProxyJob* job = new ProxyJob();
+  job->body = body;
+  job->model = model;
+  job->upstreamModel = upstreamModel;
+  job->isStream = isStream;
+  job->n = n;
   for (int k = 0; k < n; k++) {
-    int idx = candidates[(start + k) % n];
-    int code = attemptRequest(idx, body, upstreamModel, isStream);
-    if (code >= 200 && code < 300) {
-      ok = true;
-      break;
-    }
-    lastCode = code;
-    // fail over on rate-limit (429) or server/connectivity errors (5xx / 0)
-    if (code == 429 || code >= 500 || code == 0) continue;
-    // other client errors (4xx) are not retried
-    break;
+    int idx = candidates[k];
+    job->providers[k].id = g_providers[idx].id;
+    job->providers[k].name = g_providers[idx].name;
+    job->providers[k].url = g_providers[idx].url;
+    job->providers[k].key = g_providers[idx].key;
   }
+  job->client = server.client();
 
-  if (ok) {
-    g_reqOk++;
-    g_latencySum += millis() - t0;
-  } else {
+  if (xQueueSend(g_proxyQueue, &job, 0) != pdTRUE) {
+    delete job;
     g_reqFail++;
-    if (lastCode == 429) sendError(429, "all providers rate-limited");
-    else if (lastCode >= 500 || lastCode == 0) sendError(502, "all providers failed");
-    else sendError(lastCode > 0 ? lastCode : 502, "upstream error");
+    sendError(503, "proxy busy, try again");
+    return;
   }
-  Serial.printf("chat model=%s candidates=%d code=%d heap=%d\n",
-                model.c_str(), n, lastCode, ESP.getFreeHeap());
+  // No response here — the proxy task writes directly to the client socket.
 }
 
 void handleNotFound() { sendError(404, "not found"); }
 
 // ---------------------------------------------------------------------------
-// Admin JSON API
+// Admin JSON API — Core 0
 // ---------------------------------------------------------------------------
-// GET /api/state — full dashboard state
 void handleApiState() {
   if (!requireAdmin()) return;
   bool conn = WiFi.status() == WL_CONNECTED;
@@ -691,6 +799,7 @@ void handleApiState() {
   doc["stats"]["requests_fail"] = g_reqFail;
   doc["stats"]["avg_latency_ms"] = g_reqOk ? (g_latencySum / g_reqOk) : 0;
 
+  statsLock();
   JsonObject usg = doc["usage"].to<JsonObject>();
   usg["prompt_tokens"] = g_totalPrompt;
   usg["completion_tokens"] = g_totalCompletion;
@@ -745,13 +854,13 @@ void handleApiState() {
       }
     }
   }
+  statsUnlock();
 
   String out;
   serializeJson(doc, out);
   sendJson(200, out);
 }
 
-// POST /api/providers — add/update provider {name,url,key,active}
 void handleApiProviderAdd() {
   if (!requireAdmin()) return;
   JsonDocument doc;
@@ -766,9 +875,11 @@ void handleApiProviderAdd() {
   if (!name.length() || !url.length()) { sendError(400, "name and url are required"); return; }
 
   String id = slugify(name);
+  statsLock();
   int idx = findProvider(id);
   if (idx < 0) {
     if (g_providerCount >= MAX_PROVIDERS) {
+      statsUnlock();
       sendError(409, "provider limit reached (" + String(MAX_PROVIDERS) + ")");
       return;
     }
@@ -778,8 +889,9 @@ void handleApiProviderAdd() {
   g_providers[idx].name = name;
   g_providers[idx].url = url;
   g_providers[idx].active = active;
-  if (key.length()) g_providers[idx].key = key;   // empty key keeps existing
+  if (key.length()) g_providers[idx].key = key;
   saveProviders();
+  statsUnlock();
 
   int fetched = -1;
   if (g_providers[idx].key.length()) fetched = fetchModels(idx);
@@ -796,29 +908,28 @@ void handleApiProviderAdd() {
   sendJson(200, s);
 }
 
-// POST /api/providers/remove — {id}
 void handleApiProviderRemove() {
   if (!requireAdmin()) return;
   JsonDocument doc;
   deserializeJson(doc, server.arg("plain"));
   String id = doc["id"] | "";
   id.trim();
+  statsLock();
   int idx = findProvider(id);
-  if (idx < 0) { sendError(404, "provider not found"); return; }
-
+  if (idx < 0) { statsUnlock(); sendError(404, "provider not found"); return; }
   for (int i = idx; i < g_providerCount - 1; i++) {
     g_providers[i] = g_providers[i + 1];
     g_providerModels[i] = g_providerModels[i + 1];
   }
   g_providerCount--;
   saveProviders();
+  statsUnlock();
   prefs.begin("gateway", false);
   prefs.remove(("models_" + id).c_str());
   prefs.end();
   sendJson(200, "{\"ok\":true}");
 }
 
-// POST /api/providers/toggle — {id, active}
 void handleApiProviderToggle() {
   if (!requireAdmin()) return;
   JsonDocument doc;
@@ -826,14 +937,15 @@ void handleApiProviderToggle() {
   String id = doc["id"] | "";
   bool active = doc["active"] | true;
   id.trim();
+  statsLock();
   int idx = findProvider(id);
-  if (idx < 0) { sendError(404, "provider not found"); return; }
+  if (idx < 0) { statsUnlock(); sendError(404, "provider not found"); return; }
   g_providers[idx].active = active;
   saveProviders();
+  statsUnlock();
   sendJson(200, "{\"ok\":true}");
 }
 
-// POST /api/providers/fetch — {id}
 void handleApiProviderFetch() {
   if (!requireAdmin()) return;
   JsonDocument doc;
@@ -960,6 +1072,15 @@ void handleRoot() {
 }
 
 // ---------------------------------------------------------------------------
+// Tasks
+// ---------------------------------------------------------------------------
+void webServerTask(void*) {
+  for (;;) {
+    server.handleClient();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Setup / loop
 // ---------------------------------------------------------------------------
 void setup() {
@@ -1022,17 +1143,20 @@ void setup() {
   const char* hk[] = {"Authorization", "Cookie"};
   server.collectHeaders(hk, 2);
   server.begin();
-  Serial.printf("HTTP :80 dashboard http://%s/ heap %d\n",
+
+  // FreeRTOS primitives
+  g_statsMutex = xSemaphoreCreateMutex();
+  g_proxyQueue = xQueueCreate(PROXY_QUEUE_LEN, sizeof(ProxyJob*));
+
+  // Pin the WebServer to Core 0 and the proxy engine to Core 1.
+  xTaskCreatePinnedToCore(webServerTask, "web", 8192, NULL, 1, &g_webTask, 0);
+  xTaskCreatePinnedToCore(proxyTask, "proxy", 16384, NULL, 2, &g_proxyTask, 1);
+
+  Serial.printf("HTTP :80 dashboard http://%s/ heap %d (web=Core0, proxy=Core1)\n",
                 WiFi.localIP().toString().c_str(), ESP.getFreeHeap());
 }
 
 void loop() {
-  server.handleClient();
-  static unsigned long last = 0;
-  if (millis() - last > 10000) {
-    last = millis();
-    Serial.printf("heartbeat uptime=%lus heap=%d wifi=%d ip=%s\n",
-                  millis() / 1000, ESP.getFreeHeap(),
-                  WiFi.status() == WL_CONNECTED, WiFi.localIP().toString().c_str());
-  }
+  // Work happens in the dedicated web (Core 0) and proxy (Core 1) tasks.
+  vTaskDelay(portMAX_DELAY);
 }

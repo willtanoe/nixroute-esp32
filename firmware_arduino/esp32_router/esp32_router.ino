@@ -419,12 +419,21 @@ bool modelInProvider(int idx, const String& model) {
 
 int fetchModels(int idx) {
   g_lastFetchError = "";
-  String root = apiRoot(g_providers[idx].url);
-  WiFiClientSecure client;
-  client.setInsecure();
+  String url = apiRoot(g_providers[idx].url) + "/models";
+  bool secure = url.startsWith("https://");
+  WiFiClientSecure* secClient = nullptr;
   HTTPClient http;
-  if (!http.begin(client, root + "/models")) {
-    g_lastFetchError = "cannot connect to " + root;
+  bool begun;
+  if (secure) {
+    secClient = new WiFiClientSecure();
+    secClient->setInsecure();
+    begun = http.begin(*secClient, url);
+  } else {
+    begun = http.begin(url);  // HTTPClient uses a plain TCP client internally
+  }
+  if (!begun) {
+    if (secClient) delete secClient;
+    g_lastFetchError = "cannot connect to " + url;
     return -1;
   }
   if (g_providers[idx].key.length())
@@ -433,6 +442,7 @@ int fetchModels(int idx) {
   int code = http.GET();
   String body = http.getString();
   http.end();
+  if (secClient) delete secClient;
 
   if (code < 200 || code >= 300) {
     g_lastFetchError = "HTTP " + String(code);
@@ -634,7 +644,11 @@ void parseUrl(const String& url, String& host, uint16_t& port, String& path) {
   else host = s;
 }
 
-int readResponseHeaders(WiFiClientSecure& client, bool* chunked, size_t* contentLength) {
+// The manual HTTP client helpers are templated on the client type so the relay
+// works over TLS (WiFiClientSecure) as well as plain TCP (WiFiClient) - a
+// provider URL that starts with http:// is now usable too.
+template <class T>
+int readResponseHeaders(T& client, bool* chunked, size_t* contentLength) {
   *chunked = false;
   *contentLength = 0;
   int code = 0;
@@ -661,7 +675,8 @@ int readResponseHeaders(WiFiClientSecure& client, bool* chunked, size_t* content
   return code;
 }
 
-size_t readChunkSize(WiFiClientSecure& client) {
+template <class T>
+size_t readChunkSize(T& client) {
   String line = client.readStringUntil('\n');
   line.trim();
   int semi = line.indexOf(';');
@@ -673,7 +688,8 @@ size_t readChunkSize(WiFiClientSecure& client) {
 // buffer an arbitrarily large JSON body, so stop at a sane ceiling instead of
 // crashing the whole gateway on an OOM. Returns what was read (may be partial).
 #define BODY_BUF_LIMIT (192 * 1024)
-String readBodyManual(WiFiClientSecure& client, bool chunked, size_t contentLength) {
+template <class T>
+String readBodyManual(T& client, bool chunked, size_t contentLength) {
   String body;
   body.reserve(4096);
   uint8_t buf[1024];
@@ -725,7 +741,8 @@ String readBodyManual(WiFiClientSecure& client, bool chunked, size_t contentLeng
   return body;
 }
 
-bool streamResponseManual(WiFiClientSecure& client, bool chunked, size_t contentLength,
+template <class T>
+bool streamResponseManual(T& client, bool chunked, size_t contentLength,
                           NetworkClient& c, uint32_t* pt, uint32_t* ct, uint32_t* tt) {
   bool sent = true;
   c.print("HTTP/1.1 200 OK\r\n");
@@ -791,23 +808,15 @@ bool streamResponseManual(WiFiClientSecure& client, bool chunked, size_t content
 //   -1 -> the upload was aborted by the client, or the socket died while the
 //        body/response was in flight. The body may be partially consumed, so
 //        the caller MUST NOT fail over.
-int doUpstream(const ProviderSnap& p, ProxyJob* job, NetworkClient& c,
-               const String& fullModel, uint32_t& outPt, uint32_t& outCt,
-               uint32_t& outTt, uint32_t& latMs, bool* delivered) {
-  outPt = outCt = outTt = 0;
-  if (delivered) *delivered = false;
-  String host;
-  uint16_t port;
-  String path;
-  parseUrl(apiRoot(p.url) + "/chat/completions", host, port, path);
+template <class T>
+int relayUpstream(T& client, ProxyJob* job, NetworkClient& c,
+                  const String& providerId, const String& providerKey,
+                  const String& host, uint16_t port, const String& path,
+                  const String& fullModel, uint32_t& outPt, uint32_t& outCt,
+                  uint32_t& outTt, uint32_t& latMs, bool* delivered) {
   unsigned long t0 = millis();
-  WiFiClientSecure client;
-  client.setInsecure();
-  client.setTimeout(60000);  // LLM responses can take many seconds
   if (!client.connect(host.c_str(), port)) {
     latMs = millis() - t0;
-    bumpMetrics(p.id, false, 0, latMs);
-    recordProviderResult(p.id, false, 0);
     return 0;  // body not consumed yet -> retryable
   }
 
@@ -815,13 +824,13 @@ int doUpstream(const ProviderSnap& p, ProxyJob* job, NetworkClient& c,
   client.printf("POST %s HTTP/1.1\r\n", path.c_str());
   client.printf("Host: %s\r\n", host.c_str());
   client.print("Content-Type: application/json\r\n");
-  if (p.key.length()) {
+  if (providerKey.length()) {
     client.print("Authorization: Bearer ");
-    client.print(p.key);
+    client.print(providerKey);
     client.print("\r\n");
   }
   client.print(job->isStream ? "Accept: text/event-stream\r\n" : "Accept: application/json\r\n");
-  if (p.id == "openrouter") {
+  if (providerId == "openrouter") {
     client.print("HTTP-Referer: http://" + WiFi.localIP().toString() + "\r\n");
     client.print("X-Title: NixRoute\r\n");
   }
@@ -884,6 +893,37 @@ int doUpstream(const ProviderSnap& p, ProxyJob* job, NetworkClient& c,
     readBodyManual(client, chunked, contentLength);  // drain
   }
   client.stop();
+  return code;
+}
+
+int doUpstream(const ProviderSnap& p, ProxyJob* job, NetworkClient& c,
+               const String& fullModel, uint32_t& outPt, uint32_t& outCt,
+               uint32_t& outTt, uint32_t& latMs, bool* delivered) {
+  outPt = outCt = outTt = 0;
+  if (delivered) *delivered = false;
+  String url = apiRoot(p.url) + "/chat/completions";
+  bool secure = url.startsWith("https://");
+  String host;
+  uint16_t port;
+  String path;
+  parseUrl(url, host, port, path);
+
+  unsigned long t0 = millis();
+  int code;
+  if (secure) {
+    WiFiClientSecure client;
+    client.setInsecure();
+    client.setTimeout(60000);  // LLM responses can take many seconds
+    code = relayUpstream(client, job, c, p.id, p.key, host, port, path,
+                         fullModel, outPt, outCt, outTt, latMs, delivered);
+  } else {
+    NetworkClient client;  // plain TCP for http:// providers
+    client.setTimeout(60000);
+    code = relayUpstream(client, job, c, p.id, p.key, host, port, path,
+                         fullModel, outPt, outCt, outTt, latMs, delivered);
+  }
+  latMs = millis() - t0;
+  bool ok = (code >= 200 && code < 300);
   bumpMetrics(p.id, ok, code, latMs);
   recordProviderResult(p.id, ok, code);
   return code;
@@ -1587,19 +1627,28 @@ void handleApiProviderPing() {
   int idx = findProvider(id);
   if (idx < 0) { sendError(404, "provider not found"); return; }
 
-  String root = apiRoot(g_providers[idx].url);
-  WiFiClientSecure client;
-  client.setInsecure();
+  String url = apiRoot(g_providers[idx].url) + "/models";
+  bool secure = url.startsWith("https://");
+  WiFiClientSecure* secClient = nullptr;
   HTTPClient http;
   unsigned long t0 = millis();
   int code = 0;
-  if (http.begin(client, root + "/models")) {
+  bool begun;
+  if (secure) {
+    secClient = new WiFiClientSecure();
+    secClient->setInsecure();
+    begun = http.begin(*secClient, url);
+  } else {
+    begun = http.begin(url);
+  }
+  if (begun) {
     if (g_providers[idx].key.length())
       http.addHeader("Authorization", "Bearer " + g_providers[idx].key);
     http.setTimeout(10000);
     code = http.GET();
     http.end();
   }
+  if (secClient) delete secClient;
   unsigned long lat = millis() - t0;
 
   JsonDocument out;

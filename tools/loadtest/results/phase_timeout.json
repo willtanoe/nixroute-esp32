@@ -1,0 +1,11 @@
+{
+ "name": "provider-timeout",
+ "result": {
+  "status": 502,
+  "ms": 13325.8,
+  "body": "{\"error\":{\"message\":\"all providers failed\"}}",
+  "min_heap": 142112,
+  "resets": 0,
+  "recovery": 200
+ }
+}

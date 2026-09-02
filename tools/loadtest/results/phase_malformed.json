@@ -1,0 +1,24 @@
+{
+ "name": "malformed",
+ "results": [
+  {
+   "case": "garbage-json",
+   "status": 400,
+   "body": "{\"error\":{\"message\":\"missing model\"}}"
+  },
+  {
+   "case": "missing-model",
+   "status": 400,
+   "body": "{\"error\":{\"message\":\"missing model\"}}"
+  },
+  {
+   "case": "huge-body-2MB",
+   "status": "exc:[WinError 10054] An existing connection was forcibly closed "
+  },
+  {
+   "case": "unknown-provider-ns",
+   "status": 404,
+   "body": "{\"error\":{\"message\":\"unknown provider in model namespace\"}}"
+  }
+ ]
+}

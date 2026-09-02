@@ -1,0 +1,49 @@
+{
+ "name": "provider-faults",
+ "results": [
+  {
+   "model": "mock429",
+   "status": 429,
+   "expected": 429,
+   "ms": 344.9,
+   "body": "{\"error\":{\"message\":\"all providers rate-limited\"}}"
+  },
+  {
+   "model": "mock500",
+   "status": 502,
+   "expected": 500,
+   "ms": 246.0,
+   "body": "{\"error\":{\"message\":\"all providers failed\"}}"
+  },
+  {
+   "model": "mock503",
+   "status": 502,
+   "expected": 503,
+   "ms": 348.3,
+   "body": "{\"error\":{\"message\":\"all providers failed\"}}"
+  },
+  {
+   "model": "mock400",
+   "status": 400,
+   "expected": 400,
+   "ms": 259.4,
+   "body": "{\"error\":{\"message\":\"upstream error\"}}"
+  },
+  {
+   "model": "mockreset",
+   "status": 502,
+   "expected": 502,
+   "ms": 264.0,
+   "body": "{\"error\":{\"message\":\"all providers failed\"}}"
+  },
+  {
+   "model": "mockmid-stream",
+   "status": 503,
+   "bytes": 70,
+   "ms": 39.6
+  },
+  {
+   "recovery": 503
+  }
+ ]
+}

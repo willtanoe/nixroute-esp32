@@ -1,0 +1,12 @@
+{
+ "name": "rapid-sequential",
+ "results": {
+  "requests": 40,
+  "ok": 40,
+  "fails": [],
+  "req_per_s": 3.66,
+  "wall_s": 10.92,
+  "min_heap": 143180,
+  "resets": 0
+ }
+}

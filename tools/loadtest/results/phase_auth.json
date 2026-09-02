@@ -1,0 +1,17 @@
+{
+ "name": "auth",
+ "results": [
+  {
+   "case": "models-no-token",
+   "status": 401
+  },
+  {
+   "case": "models-bad-token",
+   "status": 401
+  },
+  {
+   "case": "chat-good-token",
+   "status": 200
+  }
+ ]
+}

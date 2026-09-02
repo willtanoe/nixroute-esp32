@@ -1,0 +1,17 @@
+{
+ "name": "sse-streams",
+ "results": [
+  {
+   "bytes": 199436,
+   "sec": 1.2,
+   "min_heap": 125492,
+   "resets": 0
+  },
+  {
+   "overlap_statuses": [
+    503,
+    200
+   ]
+  }
+ ]
+}

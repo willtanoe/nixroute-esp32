@@ -1,0 +1,50 @@
+{
+ "name": "concurrency",
+ "levels": [
+  {
+   "concurrency": 1,
+   "wall_s": 0.31,
+   "ok": 1,
+   "busy_503": 0,
+   "other": {},
+   "min_heap": 152324,
+   "resets": 0
+  },
+  {
+   "concurrency": 2,
+   "wall_s": 0.3,
+   "ok": 1,
+   "busy_503": 1,
+   "other": {},
+   "min_heap": 150692,
+   "resets": 0
+  },
+  {
+   "concurrency": 4,
+   "wall_s": 1.3,
+   "ok": 2,
+   "busy_503": 2,
+   "other": {},
+   "min_heap": 147096,
+   "resets": 0
+  },
+  {
+   "concurrency": 8,
+   "wall_s": 3.25,
+   "ok": 3,
+   "busy_503": 5,
+   "other": {},
+   "min_heap": 147080,
+   "resets": 0
+  },
+  {
+   "concurrency": 16,
+   "wall_s": 7.28,
+   "ok": 4,
+   "busy_503": 12,
+   "other": {},
+   "min_heap": 147028,
+   "resets": 0
+  }
+ ]
+}

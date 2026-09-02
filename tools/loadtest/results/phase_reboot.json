@@ -1,0 +1,21 @@
+{
+ "name": "reboot-recovery",
+ "results": {
+  "before": {
+   "providers": [
+    "geraikita",
+    "mockok",
+    "mockdead"
+   ],
+   "tokens": 2
+  },
+  "after": {
+   "providers": [
+    "geraikita",
+    "mockok",
+    "mockdead"
+   ],
+   "tokens": 2
+  }
+ }
+}

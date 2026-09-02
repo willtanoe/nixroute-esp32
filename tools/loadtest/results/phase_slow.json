@@ -1,0 +1,9 @@
+{
+ "name": "slow-client",
+ "result": {
+  "bytes_read": 60416,
+  "sec": 1.54,
+  "min_heap": 117676,
+  "resets": 0
+ }
+}

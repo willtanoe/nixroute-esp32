@@ -512,7 +512,8 @@ bool requireAdmin() {
 // ---------------------------------------------------------------------------
 // Routing engine (runs on Core 0, in the WebServer task)
 // ---------------------------------------------------------------------------
-int resolveCandidates(const String& model, int* candidates, String* upstreamModel) {
+int resolveCandidates(String model, int* candidates, String* upstreamModel) {
+  if (model.startsWith("nx/")) model = model.substring(3);
   if (upstreamModel) *upstreamModel = model;
 
   // 1. explicit "<provider>/<model>" namespace (skip cooling providers)
@@ -1036,7 +1037,7 @@ void handleModels() {
         int comma = l.indexOf(',', start);
         String m = (comma < 0) ? l.substring(start) : l.substring(start, comma);
         JsonObject mo = data.add<JsonObject>();
-        mo["id"] = g_providers[i].id + "/" + m;
+        mo["id"] = "nx/" + g_providers[i].id + "/" + m;
         mo["object"] = "model";
         mo["owned_by"] = g_providers[i].id;
         if (comma < 0) break;
@@ -1044,7 +1045,7 @@ void handleModels() {
       }
     } else {
       JsonObject mo = data.add<JsonObject>();
-      mo["id"] = g_providers[i].id + "/auto";
+      mo["id"] = "nx/" + g_providers[i].id + "/auto";
       mo["object"] = "model";
       mo["owned_by"] = g_providers[i].id;
     }
@@ -1272,7 +1273,7 @@ void handleApiState() {
       while (start < (int)l.length()) {
         int comma = l.indexOf(',', start);
         String m = (comma < 0) ? l.substring(start) : l.substring(start, comma);
-        models.add(g_providers[i].id + "/" + m);
+        models.add("nx/" + g_providers[i].id + "/" + m);
         if (comma < 0) break;
         start = comma + 1;
       }

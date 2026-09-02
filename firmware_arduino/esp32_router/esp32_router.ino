@@ -54,6 +54,8 @@ struct Provider {
   String id, name, url, key;
   bool active = true;
   Metrics m;
+  int consecutiveFailures = 0;        // circuit breaker
+  unsigned long coolDownUntil = 0;    // millis() timestamp when cooldown ends
 };
 
 struct UsageEntry {
@@ -223,6 +225,30 @@ void bumpMetrics(const String& id, bool ok, int code, uint32_t lat) {
       g_providers[i].m.lastLatencyMs = lat;
       if (ok) g_providers[i].m.success++;
       else { g_providers[i].m.failed++; if (code == 429) g_providers[i].m.rateLimited++; }
+      break;
+    }
+  }
+  statsUnlock();
+}
+
+// Circuit breaker: on 5xx/timeout, count consecutive failures; after
+// CIRCUIT_BREAKER_THRESHOLD, enter cooldown for CIRCUIT_BREAKER_COOLDOWN_MS.
+#define CIRCUIT_BREAKER_THRESHOLD   3
+#define CIRCUIT_BREAKER_COOLDOWN_MS 60000
+
+void recordProviderResult(const String& id, bool ok, int code) {
+  statsLock();
+  for (int i = 0; i < g_providerCount; i++) {
+    if (g_providers[i].id == id) {
+      if (ok) {
+        g_providers[i].consecutiveFailures = 0;
+        g_providers[i].coolDownUntil = 0;
+      } else if (code >= 500 || code == 0) {  // 5xx or connection timeout
+        if (++g_providers[i].consecutiveFailures >= CIRCUIT_BREAKER_THRESHOLD) {
+          g_providers[i].coolDownUntil = millis() + CIRCUIT_BREAKER_COOLDOWN_MS;
+          g_providers[i].consecutiveFailures = 0;
+        }
+      }
       break;
     }
   }
@@ -445,26 +471,30 @@ bool requireAdmin() {
 int resolveCandidates(const String& model, int* candidates, String* upstreamModel) {
   if (upstreamModel) *upstreamModel = model;
 
+  // 1. explicit "<provider>/<model>" namespace (skip cooling providers)
   int slash = model.indexOf('/');
   if (slash > 0) {
     String prefix = model.substring(0, slash);
     int idx = findProvider(prefix);
-    if (idx >= 0 && g_providers[idx].active) {
+    if (idx >= 0 && g_providers[idx].active && g_providers[idx].coolDownUntil <= millis()) {
       candidates[0] = idx;
       if (upstreamModel) *upstreamModel = model.substring(slash + 1);
       return 1;
     }
   }
 
+  // 2. exact match across providers (round-robin among non-cooling matches)
   int n = 0;
   for (int i = 0; i < g_providerCount; i++)
-    if (g_providers[i].active && modelInProvider(i, model)) candidates[n++] = i;
+    if (g_providers[i].active && g_providers[i].coolDownUntil <= millis() && modelInProvider(i, model))
+      candidates[n++] = i;
   if (n) { if (upstreamModel) *upstreamModel = model; return n; }
 
+  // 3. "<provider>-" prefix
   for (int i = 0; i < g_providerCount; i++) {
     String p = g_providers[i].id + "-";
     if (model.startsWith(p)) {
-      if (g_providers[i].active) {
+      if (g_providers[i].active && g_providers[i].coolDownUntil <= millis()) {
         candidates[0] = i;
         if (upstreamModel) *upstreamModel = model.substring(p.length());
         return 1;
@@ -472,6 +502,14 @@ int resolveCandidates(const String& model, int* candidates, String* upstreamMode
     }
   }
 
+  // 4. fallback: all active providers with a key (skip cooling)
+  n = 0;
+  for (int i = 0; i < g_providerCount; i++)
+    if (g_providers[i].active && g_providers[i].key.length() && g_providers[i].coolDownUntil <= millis())
+      candidates[n++] = i;
+  if (n) { if (upstreamModel) *upstreamModel = model; return n; }
+
+  // 5. graceful degradation: if everything is cooling, allow cooling providers
   n = 0;
   for (int i = 0; i < g_providerCount; i++)
     if (g_providers[i].active && g_providers[i].key.length()) candidates[n++] = i;
@@ -581,6 +619,7 @@ int doUpstream(const ProviderSnap& p, const String& sendBody, bool isStream,
   }
   http.end();
   bumpMetrics(p.id, ok, code, lat);
+  recordProviderResult(p.id, ok, code);
   return code;
 }
 
@@ -839,6 +878,7 @@ void handleApiState() {
     o["key_masked"] = maskKey(g_providers[i].key);
     o["has_key"] = g_providers[i].key.length() > 0;
     o["active"] = g_providers[i].active;
+    o["cooling"] = g_providers[i].coolDownUntil > millis();
     JsonObject mm = o["metrics"].to<JsonObject>();
     mm["total"] = g_providers[i].m.total;
     mm["success"] = g_providers[i].m.success;

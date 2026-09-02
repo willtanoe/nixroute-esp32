@@ -908,21 +908,21 @@ void handleApiWifi() {
 // Auth pages (login / logout)
 // ---------------------------------------------------------------------------
 void handleLogin() {
-  String html = R"HTML(<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Login — NixRoute</title><style>
-:root{--bg:#0f172a;--surface:#1e293b;--border:#334155;--text:#e2e8f0;--muted:#94a3b8;--accent:#6366f1;--accent-h:#818cf8}
+  String html = R"HTML(<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 500 500'%3E%3Crect x='70' y='70' width='92' height='375' rx='46' fill='%230c1a30'/%3E%3Crect x='338' y='70' width='92' height='375' rx='46' fill='%230c1a30'/%3E%3Cline x1='125' y1='130' x2='375' y2='380' stroke='%230c1a30' stroke-width='96' stroke-linecap='round'/%3E%3Cline x1='125' y1='130' x2='375' y2='380' stroke='%23ffffff' stroke-width='18' stroke-linecap='round'/%3E%3Ccircle cx='125' cy='130' r='34' fill='%230c1a30' stroke='%23ffffff' stroke-width='14'/%3E%3Ccircle cx='125' cy='130' r='16' fill='%2300a8b5'/%3E%3Ccircle cx='250' cy='255' r='34' fill='%230c1a30' stroke='%23ffffff' stroke-width='14'/%3E%3Ccircle cx='250' cy='255' r='16' fill='%2300a8b5'/%3E%3Ccircle cx='375' cy='380' r='34' fill='%230c1a30' stroke='%23ffffff' stroke-width='14'/%3E%3Ccircle cx='375' cy='380' r='16' fill='%2300a8b5'/%3E%3C/svg%3E"><title>Login — NixRoute</title><style>
+:root{--bg:#0f172a;--surface:#1e293b;--border:#334155;--text:#e2e8f0;--muted:#94a3b8;--accent:#00a8b5;--accent-h:#14c1cf}
 *{box-sizing:border-box}body{margin:0;font-family:ui-sans-serif,system-ui,sans-serif;background:var(--bg);color:var(--text);display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}
 .card{width:100%;max-width:360px;background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:32px}
 .logo{display:flex;align-items:center;gap:12px;margin-bottom:6px}
-.logo .mark{width:40px;height:40px;border-radius:10px;background:linear-gradient(135deg,#6366f1,#8b5cf6);display:flex;align-items:center;justify-content:center;font-weight:800;color:#fff;font-size:18px}
+.logo svg{width:40px;height:40px;flex-shrink:0}
 h1{font-size:18px;font-weight:700;margin:0}.sub{font-size:13px;color:var(--muted);margin:4px 0 24px}
 label{font-size:12px;font-weight:600;display:block;margin:14px 0 6px}
 input{width:100%;padding:11px 12px;border:1px solid var(--border);border-radius:10px;font-size:14px;background:#0d1526;color:var(--text);outline:none}
-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(99,102,241,.2)}
+input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(0,168,181,.2)}
 button{width:100%;padding:11px;border-radius:10px;border:0;background:var(--accent);color:#fff;font-weight:600;font-size:14px;cursor:pointer;margin-top:18px}
 button:hover{background:var(--accent-h)}
 .hint{font-size:11px;color:var(--muted);margin-top:14px;text-align:center}
 code{background:#0d1526;border:1px solid var(--border);padding:1px 6px;border-radius:6px;font-size:11px}
-</style></head><body><div class="card"><div class="logo"><div class="mark">N</div><div><h1>NixRoute</h1><div class="sub">ESP32 API Gateway</div></div></div>
+</style></head><body><div class="card"><div class="logo"><svg viewBox="0 0 500 500" xmlns="http://www.w3.org/2000/svg"><rect x="70" y="70" width="92" height="375" rx="46" fill="#0c1a30"/><rect x="338" y="70" width="92" height="375" rx="46" fill="#0c1a30"/><path d="M416 85l26-26m0 0h-24m24 0v24" fill="none" stroke="#0c1a30" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/><line x1="125" y1="130" x2="375" y2="380" stroke="#0c1a30" stroke-width="96" stroke-linecap="round"/><line x1="125" y1="130" x2="375" y2="380" stroke="#ffffff" stroke-width="18" stroke-linecap="round"/><circle cx="125" cy="130" r="34" fill="#0c1a30" stroke="#ffffff" stroke-width="14"/><circle cx="125" cy="130" r="16" fill="#00a8b5"/><circle cx="250" cy="255" r="34" fill="#0c1a30" stroke="#ffffff" stroke-width="14"/><circle cx="250" cy="255" r="16" fill="#00a8b5"/><circle cx="375" cy="380" r="34" fill="#0c1a30" stroke="#ffffff" stroke-width="14"/><circle cx="375" cy="380" r="16" fill="#00a8b5"/></svg><div><h1>NixRoute</h1><div class="sub">ESP32 API Gateway</div></div></div>
 <p class="sub">Sign in to the dashboard. Default password <code>123456</code>.</p>
 <form method="POST" action="/admin/login"><label>Password</label><input name="password" type="password" placeholder="••••••" required autofocus><button>Sign In</button></form>
 <p class="hint">Change the password in Settings after login.</p></div></body></html>)HTML";

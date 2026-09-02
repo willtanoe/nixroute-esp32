@@ -1,6 +1,12 @@
-# NixRoute — ESP32 API Gateway
+<p align="center">
+  <img src="assets/nixroute.svg" alt="NixRoute" width="120">
+</p>
 
-> **A standalone OpenAI-compatible AI gateway that runs entirely on an ESP32.**
+<h1 align="center">NixRoute</h1>
+<p align="center"><strong>ESP32 API Gateway</strong> — a standalone OpenAI-compatible AI gateway running entirely on an ESP32.</p>
+
+---
+
 > Point any OpenAI SDK at `http://<esp32-ip>/v1` and route requests across multiple
 > AI providers — with smart failover, round-robin load balancing, and live token
 > usage tracking — all managed from a single self-hosted dashboard.
@@ -63,6 +69,8 @@ curl / Python OpenAI SDK / Claude Code / OpenCode
 firmware_arduino/esp32_router/
   esp32_router.ino    # firmware: HTTP server, routing, failover, NVS, Wi-Fi
   dashboard_html.h    # dashboard SPA (HTML/CSS/JS, stored in flash via PROGMEM)
+assets/
+  nixroute.svg        # brand logo (dashboard, favicon, README)
 tests/scripts/        # host-side HTTP smoke tests (no hardware needed)
 ```
 

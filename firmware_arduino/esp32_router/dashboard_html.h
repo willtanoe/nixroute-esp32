@@ -8,13 +8,14 @@ const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 500 500'%3E%3Crect x='70' y='70' width='92' height='375' rx='46' fill='%230c1a30'/%3E%3Crect x='338' y='70' width='92' height='375' rx='46' fill='%230c1a30'/%3E%3Cline x1='125' y1='130' x2='375' y2='380' stroke='%230c1a30' stroke-width='96' stroke-linecap='round'/%3E%3Cline x1='125' y1='130' x2='375' y2='380' stroke='%23ffffff' stroke-width='18' stroke-linecap='round'/%3E%3Ccircle cx='125' cy='130' r='34' fill='%230c1a30' stroke='%23ffffff' stroke-width='14'/%3E%3Ccircle cx='125' cy='130' r='16' fill='%2300a8b5'/%3E%3Ccircle cx='250' cy='255' r='34' fill='%230c1a30' stroke='%23ffffff' stroke-width='14'/%3E%3Ccircle cx='250' cy='255' r='16' fill='%2300a8b5'/%3E%3Ccircle cx='375' cy='380' r='34' fill='%230c1a30' stroke='%23ffffff' stroke-width='14'/%3E%3Ccircle cx='375' cy='380' r='16' fill='%2300a8b5'/%3E%3C/svg%3E">
 <title>NixRoute</title>
 <style>
 :root{
   --bg:#0f172a; --surface:#1e293b; --surface-2:#273449; --surface-3:#1a2438;
   --border:#334155; --border-2:#3b4a63;
   --text:#e2e8f0; --muted:#94a3b8; --subtle:#64748b;
-  --accent:#6366f1; --accent-h:#818cf8; --accent-soft:rgba(99,102,241,.14);
+  --accent:#00a8b5; --accent-h:#14c1cf; --accent-soft:rgba(0,168,181,.16);
   --ok:#10b981; --warn:#f59e0b; --danger:#ef4444;
   --radius:14px; --shadow:0 4px 24px rgba(0,0,0,.35);
 }
@@ -31,8 +32,7 @@ header{position:sticky;top:0;z-index:20;background:rgba(15,23,42,.85);backdrop-f
   border-bottom:1px solid var(--border);padding:0 20px}
 .hbar{max-width:1080px;margin:0 auto;display:flex;align-items:center;gap:14px;height:60px}
 .brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:15px;white-space:nowrap}
-.brand .mark{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,#6366f1,#8b5cf6);
-  display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:16px}
+.brand .logo{width:36px;height:36px;flex-shrink:0}
 .brand .sub{font-weight:400;font-size:11px;color:var(--subtle)}
 .hbar .grow{flex:1}
 .pill{font-size:11px;font-weight:600;padding:4px 10px;border-radius:999px;border:1px solid var(--border-2);
@@ -49,7 +49,7 @@ header{position:sticky;top:0;z-index:20;background:rgba(15,23,42,.85);backdrop-f
 .heapbar{width:120px;flex-shrink:0}
 .heapbar .lbl{font-size:10px;color:var(--subtle);display:flex;justify-content:space-between;margin-bottom:3px}
 .heapbar .track{height:6px;border-radius:99px;background:var(--surface-2);overflow:hidden}
-.heapbar .fill{height:100%;background:linear-gradient(90deg,#6366f1,#10b981);border-radius:99px;transition:width .4s}
+.heapbar .fill{height:100%;background:linear-gradient(90deg,#00a8b5,#10b981);border-radius:99px;transition:width .4s}
 .iconbtn{width:36px;height:36px;border-radius:10px;border:1px solid var(--border-2);background:var(--surface);
   color:var(--text);cursor:pointer;display:inline-flex;align-items:center;justify-content:center;font-size:15px}
 .iconbtn:hover{background:var(--surface-2)}
@@ -166,7 +166,7 @@ td.ok{color:var(--ok)} td.danger{color:var(--danger)}
 
 <header>
   <div class="hbar">
-    <div class="brand"><div class="mark">N</div><div>NixRoute<span class="sub"><br>ESP32 API Gateway</span></div></div>
+    <div class="brand"><svg class="logo" viewBox="0 0 500 500" xmlns="http://www.w3.org/2000/svg"><rect x="70" y="70" width="92" height="375" rx="46" fill="#0c1a30"/><rect x="338" y="70" width="92" height="375" rx="46" fill="#0c1a30"/><path d="M416 85l26-26m0 0h-24m24 0v24" fill="none" stroke="#0c1a30" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/><line x1="125" y1="130" x2="375" y2="380" stroke="#0c1a30" stroke-width="96" stroke-linecap="round"/><line x1="125" y1="130" x2="375" y2="380" stroke="#ffffff" stroke-width="18" stroke-linecap="round"/><circle cx="125" cy="130" r="34" fill="#0c1a30" stroke="#ffffff" stroke-width="14"/><circle cx="125" cy="130" r="16" fill="#00a8b5"/><circle cx="250" cy="255" r="34" fill="#0c1a30" stroke="#ffffff" stroke-width="14"/><circle cx="250" cy="255" r="16" fill="#00a8b5"/><circle cx="375" cy="380" r="34" fill="#0c1a30" stroke="#ffffff" stroke-width="14"/><circle cx="375" cy="380" r="16" fill="#00a8b5"/></svg><div>NixRoute<span class="sub"><br>ESP32 API Gateway</span></div></div>
     <div class="grow"></div>
     <span class="pill off" id="wifi-pill"><span class="dot"></span>—</span>
     <div class="ipbox">IP <b id="hdr-ip">—</b></div>

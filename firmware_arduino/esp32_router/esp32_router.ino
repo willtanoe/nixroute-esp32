@@ -78,7 +78,7 @@ struct ModelUsage {
 // A chat request handed from the WebServer task (Core 0) to the proxy task
 // (Core 1). Provider data is snapshotted at enqueue time so the proxy task
 // never touches the provider array (which admin mutates on Core 0).
-struct ProviderSnap { String id, name, url, key; };
+struct ProviderSnap { String id, url, key; };
 struct ProxyJob {
   String model;         // requested model (for logging)
   String upstreamModel; // un-namespaced model to send upstream
@@ -143,6 +143,12 @@ WiFiClient wsClients[MAX_WS_CLIENTS];
 // ---------------------------------------------------------------------------
 void statsLock() { if (g_statsMutex) xSemaphoreTake(g_statsMutex, portMAX_DELAY); }
 void statsUnlock() { if (g_statsMutex) xSemaphoreGive(g_statsMutex); }
+
+// Wrap-safe deadline test for a cooldown stored as a millis() timestamp. Plain
+// "<=" breaks when millis() rolls over after ~49.7 days; the signed difference
+// keeps the comparison correct as long as the cooldown is far shorter than
+// half the 32-bit millis() range.
+inline bool inCooldown(unsigned long until) { return (int32_t)(until - millis()) > 0; }
 
 String maskKey(const String& k) {
   if (k.length() == 0) return "";
@@ -541,7 +547,7 @@ int resolveCandidates(String model, int* candidates, String* upstreamModel) {
     String prefix = model.substring(0, slash);
     int idx = findProvider(prefix);
     if (idx >= 0) {
-      if (g_providers[idx].active && g_providers[idx].coolDownUntil <= millis()) {
+      if (g_providers[idx].active && !inCooldown(g_providers[idx].coolDownUntil)) {
         candidates[0] = idx;
         if (upstreamModel) *upstreamModel = model.substring(slash + 1);
         return 1;
@@ -556,7 +562,7 @@ int resolveCandidates(String model, int* candidates, String* upstreamModel) {
   // 2. exact match across providers (round-robin among non-cooling matches)
   int n = 0;
   for (int i = 0; i < g_providerCount; i++)
-    if (g_providers[i].active && g_providers[i].coolDownUntil <= millis() && modelInProvider(i, model))
+    if (g_providers[i].active && !inCooldown(g_providers[i].coolDownUntil) && modelInProvider(i, model))
       candidates[n++] = i;
   if (n) { if (upstreamModel) *upstreamModel = model; return n; }
 
@@ -564,7 +570,7 @@ int resolveCandidates(String model, int* candidates, String* upstreamModel) {
   for (int i = 0; i < g_providerCount; i++) {
     String p = g_providers[i].id + "-";
     if (model.startsWith(p)) {
-      if (g_providers[i].active && g_providers[i].coolDownUntil <= millis()) {
+      if (g_providers[i].active && !inCooldown(g_providers[i].coolDownUntil)) {
         candidates[0] = i;
         if (upstreamModel) *upstreamModel = model.substring(p.length());
         return 1;
@@ -576,7 +582,7 @@ int resolveCandidates(String model, int* candidates, String* upstreamModel) {
   // 4. fallback: all active providers with a key (skip cooling)
   n = 0;
   for (int i = 0; i < g_providerCount; i++)
-    if (g_providers[i].active && g_providers[i].key.length() && g_providers[i].coolDownUntil <= millis())
+    if (g_providers[i].active && g_providers[i].key.length() && !inCooldown(g_providers[i].coolDownUntil))
       candidates[n++] = i;
   if (n) { if (upstreamModel) *upstreamModel = model; return n; }
 
@@ -611,33 +617,6 @@ void writeErrorRaw(NetworkClient& c, int code, const String& msg) {
   serializeJson(doc, out);
   writeJson(c, code, out);
 }
-
-// ---------------------------------------------------------------------------
-// Light token trimmer (stateful): collapses double spaces and blank lines.
-// ---------------------------------------------------------------------------
-class TokenTrimmer {
-  int _spaces;
-  int _newlines;
-public:
-  TokenTrimmer() : _spaces(0), _newlines(0) {}
-  void reset() { _spaces = 0; _newlines = 0; }
-  void trim(const uint8_t* in, size_t len, String& out) {
-    for (size_t i = 0; i < len; i++) {
-      char c = (char)in[i];
-      if (c == '\n') {
-        _spaces = 0;
-        if (++_newlines <= 1) out += c;   // collapse redundant blank lines
-      } else if (c == ' ' || c == '\t') {
-        _newlines = 0;
-        if (++_spaces <= 1) out += ' ';   // collapse double spaces
-      } else {
-        _spaces = 0;
-        _newlines = 0;
-        out += c;
-      }
-    }
-  }
-};
 
 // ---------------------------------------------------------------------------
 // Manual HTTPS client (chunked upload + response) — used by the proxy task
@@ -690,40 +669,52 @@ size_t readChunkSize(WiFiClientSecure& client) {
   return (size_t)strtoul(line.c_str(), NULL, 16);
 }
 
+// Defensive cap for buffered non-stream responses: the ESP32 has no RAM to
+// buffer an arbitrarily large JSON body, so stop at a sane ceiling instead of
+// crashing the whole gateway on an OOM. Returns what was read (may be partial).
+#define BODY_BUF_LIMIT (192 * 1024)
 String readBodyManual(WiFiClientSecure& client, bool chunked, size_t contentLength) {
   String body;
   body.reserve(4096);
   uint8_t buf[1024];
+  bool capped = false;
+  auto add = [&](const uint8_t* p, size_t n) {
+    if (!capped && body.length() + n <= BODY_BUF_LIMIT && ESP.getFreeHeap() >= 24 * 1024) {
+      body.concat((const char*)p, n);
+    } else {
+      capped = true;
+    }
+  };
   if (chunked) {
-    while (true) {
+    while (!capped) {
       size_t sz = readChunkSize(client);
       if (sz == 0) { client.readStringUntil('\n'); break; }
       size_t remaining = sz;
-      while (remaining > 0) {
+      while (remaining > 0 && !capped) {
         size_t want = remaining > sizeof(buf) ? sizeof(buf) : remaining;
         int r = client.read(buf, want);
-        if (r <= 0) break;
-        body.concat((const char*)buf, (unsigned)r);
+        if (r <= 0) { remaining = 0; break; }
+        add(buf, r);
         remaining -= r;
       }
       client.readStringUntil('\n');
     }
   } else if (contentLength > 0) {
     size_t remaining = contentLength;
-    while (remaining > 0) {
+    while (remaining > 0 && !capped) {
       size_t want = remaining > sizeof(buf) ? sizeof(buf) : remaining;
       int r = client.read(buf, want);
       if (r <= 0) break;
-      body.concat((const char*)buf, (unsigned)r);
+      add(buf, r);
       remaining -= r;
     }
   } else {
     unsigned long startT = millis();
-    while (client.connected() || client.available()) {
+    while ((client.connected() || client.available()) && !capped) {
       if (client.available()) {
         int r = client.read(buf, sizeof(buf));
         if (r <= 0) break;
-        body.concat((const char*)buf, (unsigned)r);
+        add(buf, r);
         startT = millis();
       } else {
         if (millis() - startT > 5000) break;
@@ -1043,17 +1034,37 @@ void broadcastWs(const String& msg) {
 void wsAcceptClients() {
   WiFiClient nc = wsServer.available();
   if (!nc) return;
+
+  // Reserve a slot up-front; if every slot is busy, reject before we ever send
+  // the 101 so the browser gets a clear failure instead of a silently dropped
+  // socket that it would reconnect every 3 seconds forever.
+  statsLock();
+  int slot = -1;
+  for (int i = 0; i < MAX_WS_CLIENTS; i++) {
+    if (!wsClients[i] || !wsClients[i].connected()) { slot = i; break; }
+  }
+  statsUnlock();
+  if (slot < 0) {
+    nc.print("HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    nc.stop();
+    return;
+  }
+
   String key = "";
   bool upgrade = false;
-  // read handshake headers
-  if (nc.readStringUntil('\n').length()) {
-    while (nc.available()) {
-      String line = nc.readStringUntil('\n');
-      line.trim();
-      if (line.length() == 0) break;
-      if (line.startsWith("Upgrade:") && line.indexOf("websocket") >= 0) upgrade = true;
-      if (line.startsWith("Sec-WebSocket-Key:")) { key = line.substring(18); key.trim(); }
-    }
+  // Read the handshake headers with a timeout instead of only draining whatever
+  // happens to be buffered right now (headers may arrive in several segments).
+  nc.setTimeout(5000);
+  unsigned long startT = millis();
+  bool first = true;
+  while (millis() - startT <= 5000) {
+    if (!nc.available()) { delay(1); continue; }
+    String line = nc.readStringUntil('\n');
+    line.trim();
+    if (first) { first = false; if (!line.startsWith("GET")) { nc.stop(); return; } }
+    if (line.length() == 0) break;
+    if (line.startsWith("Upgrade:") && line.indexOf("websocket") >= 0) upgrade = true;
+    if (line.startsWith("Sec-WebSocket-Key:")) { key = line.substring(18); key.trim(); }
   }
   if (!upgrade || key.length() == 0) { nc.stop(); return; }
   nc.print("HTTP/1.1 101 Switching Protocols\r\n");
@@ -1062,10 +1073,7 @@ void wsAcceptClients() {
   nc.print("Sec-WebSocket-Accept: " + wsAcceptKey(key) + "\r\n\r\n");
   statsLock();
   for (int i = 0; i < MAX_WS_CLIENTS; i++) {
-    if (!wsClients[i] || !wsClients[i].connected()) {
-      wsClients[i] = nc;
-      break;
-    }
+    if (!wsClients[i] || !wsClients[i].connected()) { wsClients[i] = nc; break; }
   }
   statsUnlock();
 }
@@ -1074,25 +1082,35 @@ void wsAcceptClients() {
 // Public API (OpenAI-compatible) — Core 0
 // ---------------------------------------------------------------------------
 void handleHealth() {
-  String ip = WiFi.localIP().toString();
   bool conn = WiFi.status() == WL_CONNECTED;
+  bool apMode = (WiFi.getMode() == WIFI_AP);
+  String ip = apMode ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
+  // Snapshot the cross-core counters atomically before rendering.
+  uint32_t rTotal, rOk, rFail, tPrompt, tComp, tTotal;
+  uint32_t latSum;
+  statsLock();
+  rTotal = g_reqTotal; rOk = g_reqOk; rFail = g_reqFail; latSum = g_latencySum;
+  tPrompt = g_totalPrompt; tComp = g_totalCompletion; tTotal = g_totalTokens;
+  statsUnlock();
+
   JsonDocument doc;
-  doc["status"] = conn ? "ok" : "wifi_disconnected";
+  doc["status"] = conn || apMode ? "ok" : "wifi_disconnected";
+  doc["ap_mode"] = apMode;
   doc["uptime_s"] = millis() / 1000;
   doc["wifi_connected"] = conn;
   doc["ip"] = ip;
   doc["rssi"] = WiFi.RSSI();
   doc["free_heap"] = ESP.getFreeHeap();
   doc["heap_total"] = ESP.getHeapSize();
-  doc["requests_total"] = g_reqTotal;
-  doc["requests_ok"] = g_reqOk;
-  doc["requests_fail"] = g_reqFail;
-  doc["avg_latency_ms"] = g_reqOk ? (g_latencySum / g_reqOk) : 0;
+  doc["requests_total"] = rTotal;
+  doc["requests_ok"] = rOk;
+  doc["requests_fail"] = rFail;
+  doc["avg_latency_ms"] = rOk ? (latSum / rOk) : 0;
   doc["local_token_set"] = g_tokenCount > 0;
   doc["providers"] = g_providerCount;
-  doc["tokens"]["prompt"] = g_totalPrompt;
-  doc["tokens"]["completion"] = g_totalCompletion;
-  doc["tokens"]["total"] = g_totalTokens;
+  doc["tokens"]["prompt"] = tPrompt;
+  doc["tokens"]["completion"] = tComp;
+  doc["tokens"]["total"] = tTotal;
 
   JsonArray provs = doc["provider_metrics"].to<JsonArray>();
   statsLock();
@@ -1223,7 +1241,6 @@ bool detectAndStream() {
   for (int k = 0; k < n; k++) {
     int idx = candidates[k];
     job->providers[k].id = g_providers[idx].id;
-    job->providers[k].name = g_providers[idx].name;
     job->providers[k].url = g_providers[idx].url;
     job->providers[k].key = g_providers[idx].key;
   }
@@ -1346,13 +1363,20 @@ void handleApiState() {
   if (!requireAdmin()) return;
   bool conn = WiFi.status() == WL_CONNECTED;
   bool apMode = (WiFi.getMode() == WIFI_AP);
+  String ip = apMode ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
+
+  // Snapshot the cross-core counters atomically before rendering.
+  uint32_t rTotal, rOk, rFail, latSum;
+  statsLock();
+  rTotal = g_reqTotal; rOk = g_reqOk; rFail = g_reqFail; latSum = g_latencySum;
+  statsUnlock();
 
   JsonDocument doc;
   doc["version"] = VERSION;
   doc["wifi"]["ssid"] = g_wifiSsid;
   doc["wifi"]["connected"] = conn;
   doc["wifi"]["ap_mode"] = apMode;
-  doc["wifi"]["ip"] = WiFi.localIP().toString();
+  doc["wifi"]["ip"] = ip;
   doc["wifi"]["rssi"] = WiFi.RSSI();
   doc["token"]["set"] = g_tokenCount > 0;
   doc["token"]["count"] = g_tokenCount;
@@ -1362,10 +1386,10 @@ void handleApiState() {
   doc["stats"]["uptime_s"] = millis() / 1000;
   doc["stats"]["heap"] = ESP.getFreeHeap();
   doc["stats"]["heap_total"] = ESP.getHeapSize();
-  doc["stats"]["requests_total"] = g_reqTotal;
-  doc["stats"]["requests_ok"] = g_reqOk;
-  doc["stats"]["requests_fail"] = g_reqFail;
-  doc["stats"]["avg_latency_ms"] = g_reqOk ? (g_latencySum / g_reqOk) : 0;
+  doc["stats"]["requests_total"] = rTotal;
+  doc["stats"]["requests_ok"] = rOk;
+  doc["stats"]["requests_fail"] = rFail;
+  doc["stats"]["avg_latency_ms"] = rOk ? (latSum / rOk) : 0;
 
   statsLock();
   JsonObject usg = doc["usage"].to<JsonObject>();
@@ -1403,7 +1427,7 @@ void handleApiState() {
     o["key_masked"] = maskKey(g_providers[i].key);
     o["has_key"] = g_providers[i].key.length() > 0;
     o["active"] = g_providers[i].active;
-    o["cooling"] = g_providers[i].coolDownUntil > millis();
+    o["cooling"] = inCooldown(g_providers[i].coolDownUntil);
     JsonObject mm = o["metrics"].to<JsonObject>();
     mm["total"] = g_providers[i].m.total;
     mm["success"] = g_providers[i].m.success;

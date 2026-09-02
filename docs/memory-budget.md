@@ -1,7 +1,7 @@
 # Memory Budget — ESP32-WROOM-32 AI API Router
 
-_Date: 2026-09-02_
-_Status: Phase 0 — planned budget (hardware not yet attached; numbers from IDF docs + first-build measurement will follow in Phase 1)_
+_Date: 2026-09-02 (updated 2026-09-02 Phase 9 build)_
+_Status: Phase 9 — build verified, runtime heap pending HW (see §10)_
 _Target: ESP32-WROOM-32 (520 KB SRAM, no PSRAM, 4 MB flash)_
 
 ---
@@ -109,19 +109,22 @@ Heap must not allocate per-token; any `malloc` in loop is defect.
 
 ---
 
-## 5. Flash Budget (4 MB)
+## 5. Flash Budget (4 MB) — Measured Phase 9
 
-| Partition | Size | Contents |
-|---|---|---|
-| nvs | 24 KB | Config + Wi-Fi phy cal |
-| otadata | 8 KB | |
-| phy_init | 4 KB | |
-| factory app (`app0`) | ~1,285 KB | Firmware + cert bundle (~100 KB) |
-| OTA (`app1`) | ~1,285 KB | Staging |
-| spiffs (optional) | ~1,350 KB (remainder) | Not needed for Phase 1; can be removed to enlarge app |
-| **Total app ceiling** | ~1,300 KB | Must keep build < 1,250 KB with bundle |
+Current `firmware/partitions.csv` (single-app large, no OTA) — chosen because proxy + cert bundle + http client exceeded 1 MB default:
 
-If build exceeds (~1,300 KB), options: strip bundle to `CMN` (common roots), disable unused ciphers, or switch to `huge_app` partition (1.9 MB app, no OTA). **OTA retained for Phase 1**; monitor `pio run` size.
+| Partition | Offset | Size | Contents |
+|---|---|---|---|
+| nvs | 0x9000 | 0x6000 (24 KB) | Config + Wi-Fi cal |
+| phy_init | — | 0x1000 (4 KB) | |
+| factory app | — | 0x170000 (1474560 B / 1.44 MB) | Firmware + cert bundle |
+| storage (spiffs) | — | 0x280000 (2621440 B) | Remainder (2.5 MB) |
+
+Build (2026-09-02, `pio run -e esp32dev`, `idf 5.x`, `partitions.csv`):
+- `RAM 11.8% 38588/327680`, `Flash 68.6% 1034485/1507328`, text+data 823k+225k, bss 20593.
+- With default OTA 1 MB ceiling we hit 98.5% (1033065/1048576) — overflow imminent. Single-app large moves ceiling to 1507328, leaving 31% headroom for future +300 KB.
+- Cert bundle `CMN` vs `FULL` did not significantly change Flash after clean (still ~1.03 MB) — dominant cost is `esp_http_client` + `mbedtls` (tf-psa-crypto) not bundle alone.
+- If OTA required later, either slim ~150 KB (disable `CONFIG_MBEDTLS_HARDWARE_ECC`, reduce log, or switch to minimal bundle) or use `partitions_two_ota` with 2×0xE0000 (~900 KB each) which is too small — so OTA at 1.2 MB needs further slimming documented in `docs/architecture.md` D-09.
 
 ---
 
@@ -175,14 +178,23 @@ Failure to meet any gate → re-tune Kconfig (§2) or reduce max body.
 
 ---
 
-## 8. Known Unknowns (to fill after hardware flash)
+## 8. Known Unknowns (runtime pending HW)
 
-- Actual httpd idle free on our `sdkconfig.defaults` (measure).
-- Fragmentation after 100+ TLS cold-starts with dynamic buffers (IDF issue #14444 suggests dynamic port had bug fixed in v5.2; verify our IDF v5.4 not regressed).
-- lwIP RX leak if client aborts mid-stream (must test §8 of `tests`).
-- Largest alloc block decay over time (`heap_caps_get_largest_free_block`).
+- Runtime idle free on our `sdkconfig.defaults` (measure at `[boot] before wifi`, `[boot] after wifi + httpd`, per-request phases). Build static RAM 11.8% corresponds to .bss+data, not heap; heap derived vs 320 KB DRAM after static.
+- Fragmentation after 100+ TLS cold-starts with dynamic buffers (IDF issue #14444 fixed in v5.2; verify our v5.4 not regressed).
+- lwIP RX leak if client aborts mid-stream (must test via `curl -N ...` Ctrl-C while streaming).
+- Largest alloc block decay (`heap_caps_get_largest_free_block`).
 
-Until measured, figures above are **planning assumptions from documentation**, not claimed measurements. They will be replaced with logged numbers after flashing.
+Until flashed on WROOM-32 (only COM1 on CI), figures remain planning + static build. Runtime gate instrumentation added in `wifi_manager` + `proxy_handler` logs.
+
+## 10. Measured Build (Phase 9) — Static
+
+- `sdkconfig.defaults` as of Phase 9 includes `MBEDTLS_DYNAMIC_BUFFER=y`, `CMN` bundle, `HTTPD_MAX_OPEN_SOCKETS=4`, Wi-Fi 6/6/16.
+- `pio run` (2026-09-02): `Linking firmware.elf -> RAM 38588, Flash 1034485/1507328 (68.6%)`, `text 823k + data 225k + bss 20593`.
+- Trend: Phase 1 (no Wi-Fi/http) 16.2% flash 169 KB → Phase 3 (http+Wi-Fi) 81.3% 852 KB → Phase 9 (proxy+streaming) 68.6% with larger partition but absolute 1.03 MB. No further growth headroom 0.47 MB.
+- Runtime heap gates remain unchecked (COM1 only, no CP210x/CH340). Phases 11/12 will fill after HW.
+
+Previous planning (§3–4) retained as budget hypothesis — now annotated.
 
 ---
 

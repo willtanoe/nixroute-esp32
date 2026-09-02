@@ -421,28 +421,39 @@ int fetchModels(int idx) {
   g_lastFetchError = "";
   String url = apiRoot(g_providers[idx].url) + "/models";
   bool secure = url.startsWith("https://");
-  WiFiClientSecure* secClient = nullptr;
-  HTTPClient http;
-  bool begun;
+  int code = -1;
+  String body = "";
   if (secure) {
-    secClient = new WiFiClientSecure();
-    secClient->setInsecure();
-    begun = http.begin(*secClient, url);
+    // The TLS client must outlive the whole request, so keep it scope-local to
+    // this block along with the HTTPClient that borrows it.
+    WiFiClientSecure client;
+    client.setInsecure();
+    HTTPClient http;
+    if (http.begin(client, url)) {
+      if (g_providers[idx].key.length())
+        http.addHeader("Authorization", "Bearer " + g_providers[idx].key);
+      http.setTimeout(20000);
+      code = http.GET();
+      body = http.getString();
+      http.end();
+    } else {
+      g_lastFetchError = "cannot connect to " + url;
+      return -1;
+    }
   } else {
-    begun = http.begin(url);  // HTTPClient uses a plain TCP client internally
+    HTTPClient http;  // http:// uses HTTPClient's built-in plain TCP client
+    if (http.begin(url)) {
+      if (g_providers[idx].key.length())
+        http.addHeader("Authorization", "Bearer " + g_providers[idx].key);
+      http.setTimeout(20000);
+      code = http.GET();
+      body = http.getString();
+      http.end();
+    } else {
+      g_lastFetchError = "cannot connect to " + url;
+      return -1;
+    }
   }
-  if (!begun) {
-    if (secClient) delete secClient;
-    g_lastFetchError = "cannot connect to " + url;
-    return -1;
-  }
-  if (g_providers[idx].key.length())
-    http.addHeader("Authorization", "Bearer " + g_providers[idx].key);
-  http.setTimeout(20000);
-  int code = http.GET();
-  String body = http.getString();
-  http.end();
-  if (secClient) delete secClient;
 
   if (code < 200 || code >= 300) {
     g_lastFetchError = "HTTP " + String(code);
@@ -1629,26 +1640,29 @@ void handleApiProviderPing() {
 
   String url = apiRoot(g_providers[idx].url) + "/models";
   bool secure = url.startsWith("https://");
-  WiFiClientSecure* secClient = nullptr;
-  HTTPClient http;
   unsigned long t0 = millis();
   int code = 0;
-  bool begun;
   if (secure) {
-    secClient = new WiFiClientSecure();
-    secClient->setInsecure();
-    begun = http.begin(*secClient, url);
+    WiFiClientSecure client;
+    client.setInsecure();
+    HTTPClient http;
+    if (http.begin(client, url)) {
+      if (g_providers[idx].key.length())
+        http.addHeader("Authorization", "Bearer " + g_providers[idx].key);
+      http.setTimeout(10000);
+      code = http.GET();
+      http.end();
+    }
   } else {
-    begun = http.begin(url);
+    HTTPClient http;
+    if (http.begin(url)) {
+      if (g_providers[idx].key.length())
+        http.addHeader("Authorization", "Bearer " + g_providers[idx].key);
+      http.setTimeout(10000);
+      code = http.GET();
+      http.end();
+    }
   }
-  if (begun) {
-    if (g_providers[idx].key.length())
-      http.addHeader("Authorization", "Bearer " + g_providers[idx].key);
-    http.setTimeout(10000);
-    code = http.GET();
-    http.end();
-  }
-  if (secClient) delete secClient;
   unsigned long lat = millis() - t0;
 
   JsonDocument out;

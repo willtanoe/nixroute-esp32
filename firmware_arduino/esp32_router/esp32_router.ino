@@ -645,6 +645,11 @@ int resolveCandidates(String model, int* candidates, String* upstreamModel) {
     }
   }
 
+  // The model still carries a "/" but matched no provider cache: treat it as an
+  // unknown namespace (404) instead of shipping a namespaced junk string to an
+  // unrelated provider.
+  if (model.indexOf('/') >= 0) return -2;
+
   // 4. fallback: all active providers with a key (skip cooling)
   n = 0;
   for (int i = 0; i < g_providerCount; i++)
@@ -703,22 +708,48 @@ void parseUrl(const String& url, String& host, uint16_t& port, String& path) {
 // The manual HTTP client helpers are templated on the client type so the relay
 // works over TLS (WiFiClientSecure) as well as plain TCP (WiFiClient) - a
 // provider URL that starts with http:// is now usable too.
+// Reads one header line (up to, but not including, LF) with an idle timeout and
+// an early exit when the peer disconnects. A plain readStringUntil() would spin
+// for the whole 60 s client timeout after an upstream RST, wedging the
+// single-flight proxy slot for a minute even though the peer is long gone.
+template <class T>
+bool readHeaderLine(T& client, String& line) {
+  line = "";
+  unsigned long idleStart = millis();
+  while (line.length() <= 4096) {
+    if (client.available()) {
+      int b = client.read();
+      if (b < 0) return false;
+      idleStart = millis();
+      if (b == '\n') return true;
+      if (b != '\r') line += (char)b;
+    } else if (!client.connected()) {
+      return false;  // reset/close detected immediately
+    } else if (millis() - idleStart > 8000) {
+      return false;  // stalled peer
+    } else {
+      delay(1);
+    }
+  }
+  return false;
+}
+
 template <class T>
 int readResponseHeaders(T& client, bool* chunked, size_t* contentLength) {
   *chunked = false;
   *contentLength = 0;
   int code = 0;
-  String status = client.readStringUntil('\n');
-  status.trim();
+  String status;
+  if (!readHeaderLine(client, status) || status.length() == 0) return 0;
   int sp1 = status.indexOf(' ');
   if (sp1 >= 0) {
     int sp2 = status.indexOf(' ', sp1 + 1);
     String cs = (sp2 >= 0) ? status.substring(sp1 + 1, sp2) : status.substring(sp1 + 1);
     code = cs.toInt();
   }
-  while (true) {
-    String line = client.readStringUntil('\n');
-    line.trim();
+  for (;;) {
+    String line;
+    if (!readHeaderLine(client, line)) break;
     if (line.length() == 0) break;
     int d = line.indexOf(':');
     if (d < 0) continue;
@@ -733,8 +764,8 @@ int readResponseHeaders(T& client, bool* chunked, size_t* contentLength) {
 
 template <class T>
 size_t readChunkSize(T& client) {
-  String line = client.readStringUntil('\n');
-  line.trim();
+  String line;
+  if (!readHeaderLine(client, line)) return 0;  // disconnected / stalled
   int semi = line.indexOf(';');
   if (semi >= 0) line = line.substring(0, semi);
   return (size_t)strtoul(line.c_str(), NULL, 16);
@@ -1331,6 +1362,7 @@ bool detectAndStream() {
   int candidates[MAX_PROVIDERS];
   String upstreamModel;
   int n = resolveCandidates(model, candidates, &upstreamModel);
+  if (n == -2) { g_chatError = "unknown provider in model namespace"; g_chatErrorCode = 404; return false; }
   if (n < 0) { g_chatError = "requested provider is disabled or cooling down"; g_chatErrorCode = 503; return false; }
   if (n == 0) { g_chatError = "no active provider available"; g_chatErrorCode = 500; return false; }
 

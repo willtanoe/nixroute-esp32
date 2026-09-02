@@ -41,7 +41,7 @@ void app_main(void) {
     gateway_config_t cfg;
     config_manager_load(&cfg);
     config_manager_log_sanitized(&cfg);
-    stats_init();
+    gw_stats_init();
     wifi_manager_init();
     http_gateway_start(cfg.http_port);
 

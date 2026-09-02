@@ -4,6 +4,7 @@
 #include "config_manager.h"
 #include "provider.h"
 #include "auth.h"
+#include "proxy_handler.h"
 #include "esp_log.h"
 #include "esp_http_server.h"
 #include "esp_system.h"
@@ -35,7 +36,7 @@ static esp_err_t health_get_handler(httpd_req_t *req) {
     int free_heap = (int)esp_get_free_heap_size();
     int min_heap = (int)esp_get_minimum_free_heap_size();
     int64_t up_s = esp_timer_get_time() / 1000000;
-    gateway_stats_t st; stats_get(&st);
+    gateway_stats_t st; gw_stats_get(&st);
 
     char buf[512];
     int n = snprintf(buf, sizeof(buf),
@@ -83,7 +84,7 @@ static esp_err_t admin_status_handler(httpd_req_t *req) {
         return send_json(req, "{\"error\":\"unauthorized\"}", 401);
     }
     char ip[16]; wifi_manager_get_ip(ip,sizeof(ip));
-    gateway_stats_t st; stats_get(&st);
+    gateway_stats_t st; gw_stats_get(&st);
     char buf[600];
     snprintf(buf,sizeof(buf),
         "{\"uptime_s\":%u,\"free_heap\":%d,\"min_heap\":%d,\"wifi_connected\":%s,\"ip\":\"%s\",\"rssi\":%d,\"disconnects\":%u}",
@@ -95,7 +96,7 @@ static esp_err_t admin_status_handler(httpd_req_t *req) {
 
 static esp_err_t admin_stats_handler(httpd_req_t *req) {
     if (auth_is_enabled() && !auth_check(req)) return send_json(req, "{\"error\":\"unauthorized\"}", 401);
-    gateway_stats_t st; stats_get(&st);
+    gateway_stats_t st; gw_stats_get(&st);
     char buf[512];
     snprintf(buf,sizeof(buf),
         "{\"requests_total\":%u,\"requests_success\":%u,\"requests_failed\":%u,\"fallbacks\":%u,\"free_heap\":%d,\"min_heap\":%d,\"last_latency_ms\":%d}",
@@ -116,25 +117,9 @@ static esp_err_t admin_providers_handler(httpd_req_t *req) {
     return send_json(req, buf, 200);
 }
 
-// --- POST /v1/chat/completions (Phase 3: 501 until proxy lands in Phase 4) ---
+// --- POST /v1/chat/completions (Phase 4: real proxy) ---
 static esp_err_t chat_completions_handler(httpd_req_t *req) {
-    if (auth_is_enabled() && !auth_check(req)) {
-        return send_json(req, "{\"error\":{\"message\":\"unauthorized\",\"type\":\"auth_error\",\"code\":401}}", 401);
-    }
-    // For Phase 3, return 501 but valid OpenAI error shape so SDKs show "not ready"
-    // Phase 4 will replace this with real proxy logic.
-    // Still read and drain body to avoid client hanging
-    char tmp[256];
-    size_t to_read = req->content_len;
-    while (to_read>0) {
-        int ret = httpd_req_recv(req, tmp, to_read > sizeof(tmp) ? sizeof(tmp) : to_read);
-        if (ret <=0) break;
-        to_read -= ret;
-    }
-    ESP_LOGW(TAG, "POST /v1/chat/completions called — proxy not yet (Phase 4) content_len=%d", req->content_len);
-    return send_json(req,
-        "{\"error\":{\"message\":\"proxy not yet implemented — Phase 4 pending. /health and /v1/models work.\",\"type\":\"not_implemented\",\"code\":501}}",
-        501);
+    return proxy_handler_handle(req);
 }
 
 // CORS preflight

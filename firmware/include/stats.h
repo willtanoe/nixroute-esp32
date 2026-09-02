@@ -21,9 +21,9 @@ typedef struct {
     uint32_t wifi_disconnects;
 } gateway_stats_t;
 
-void stats_init(void);
-void stats_on_request(bool success, int32_t latency_ms, bool fallback);
-void stats_get(gateway_stats_t *out);
+void gw_stats_init(void);
+void gw_stats_on_request(bool success, int32_t latency_ms, bool fallback);
+void gw_stats_get(gateway_stats_t *out);
 
 #ifdef __cplusplus
 }

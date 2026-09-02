@@ -1363,6 +1363,46 @@ void handleApiProviderFetch() {
   sendJson(200, s);
 }
 
+void handleApiProviderPing() {
+  if (!requireAdmin()) return;
+  JsonDocument doc;
+  deserializeJson(doc, server.arg("plain"));
+  String id = doc["id"] | "";
+  id.trim();
+  int idx = findProvider(id);
+  if (idx < 0) { sendError(404, "provider not found"); return; }
+
+  String root = apiRoot(g_providers[idx].url);
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  unsigned long t0 = millis();
+  int code = 0;
+  if (http.begin(client, root + "/models")) {
+    if (g_providers[idx].key.length())
+      http.addHeader("Authorization", "Bearer " + g_providers[idx].key);
+    http.setTimeout(10000);
+    code = http.GET();
+    http.end();
+  }
+  unsigned long lat = millis() - t0;
+
+  JsonDocument out;
+  out["ok"] = (code >= 200 && code < 300);
+  out["status"] = code;
+  out["latency_ms"] = lat;
+  String s;
+  serializeJson(out, s);
+  sendJson(200, s);
+}
+
+void handleApiReboot() {
+  if (!requireAdmin()) return;
+  sendJson(200, "{\"ok\":true}");
+  delay(200);
+  ESP.restart();
+}
+
 void handleApiTokenGenerate() {
   if (!requireAdmin()) return;
   String t = genToken(32);
@@ -1537,6 +1577,8 @@ void setup() {
   server.on("/api/providers/remove", HTTP_POST, handleApiProviderRemove);
   server.on("/api/providers/toggle", HTTP_POST, handleApiProviderToggle);
   server.on("/api/providers/fetch", HTTP_POST, handleApiProviderFetch);
+  server.on("/api/providers/ping", HTTP_POST, handleApiProviderPing);
+  server.on("/api/reboot", HTTP_POST, handleApiReboot);
   server.on("/api/token/generate", HTTP_POST, handleApiTokenGenerate);
   server.on("/api/token/clear", HTTP_POST, handleApiTokenClear);
   server.on("/api/password", HTTP_POST, handleApiPassword);

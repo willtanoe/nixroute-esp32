@@ -1,4 +1,4 @@
-# Secrets — never commit
+# Secrets - never commit
 .env
 nvs.csv
 nvs.bin
@@ -12,20 +12,13 @@ secrets/
 credentials.json
 config/secrets.json
 
-# ESP-IDF / PlatformIO build artifacts
-firmware/.pio/
-firmware/.vscode/
-firmware/.pioenvs/
-firmware/.piolibdeps/
-firmware/build/
-firmware/dist/
-firmware/sdkconfig
-firmware/sdkconfig.old
-firmware/sdkconfig.*
-firmware/.pio/build/
-firmware/build/
+# Arduino build artifacts
 build/
 dist/
+*.bin
+*.elf
+*.map
+*.o
 
 # IDE / OS
 .vscode/
@@ -56,13 +49,5 @@ npm-debug.log*
 tmp/
 out/
 
-# Hardware / debug
-research/downloads/
-research/cloned/
-*.bin
-*.elf
-*.map
-
 # Keep example configs
-!config/example/**
 !.env.example

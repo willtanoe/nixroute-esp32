@@ -27,7 +27,6 @@ body{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helveti
 a{color:var(--accent);text-decoration:none}
 code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 
-/* ---------- Header ---------- */
 header{position:sticky;top:0;z-index:20;background:rgba(15,23,42,.85);backdrop-filter:blur(10px);
   border-bottom:1px solid var(--border);padding:0 20px}
 .hbar{max-width:1080px;margin:0 auto;display:flex;align-items:center;gap:14px;height:60px}
@@ -54,7 +53,6 @@ header{position:sticky;top:0;z-index:20;background:rgba(15,23,42,.85);backdrop-f
   color:var(--text);cursor:pointer;display:inline-flex;align-items:center;justify-content:center;font-size:15px}
 .iconbtn:hover{background:var(--surface-2)}
 
-/* ---------- Tabs ---------- */
 .tabs{max-width:1080px;margin:0 auto;display:flex;gap:4px;padding:12px 20px 0;overflow-x:auto}
 .tabs button{background:transparent;border:0;color:var(--muted);font-size:13px;font-weight:600;
   padding:9px 16px;border-radius:10px;cursor:pointer;white-space:nowrap}
@@ -62,7 +60,6 @@ header{position:sticky;top:0;z-index:20;background:rgba(15,23,42,.85);backdrop-f
 .tabs button.on{color:var(--text);background:var(--surface);box-shadow:inset 0 0 0 1px var(--border)}
 .tabs button .ico{margin-right:7px}
 
-/* ---------- Layout ---------- */
 main{max-width:1080px;margin:0 auto;padding:20px}
 .view{display:none}
 .view.on{display:block}
@@ -75,7 +72,6 @@ main{max-width:1080px;margin:0 auto;padding:20px}
 .card h2 .spacer{flex:1}
 .card .desc{font-size:12px;color:var(--subtle);margin:-8px 0 14px}
 
-/* metric grid */
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:12px}
 .stat{background:var(--surface-3);border:1px solid var(--border);border-radius:12px;padding:15px}
 .stat .lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.03em}
@@ -83,14 +79,15 @@ main{max-width:1080px;margin:0 auto;padding:20px}
 .stat .val.mono{font-size:14px;word-break:break-all}
 .stat .val.ok{color:var(--ok)} .stat .val.warn{color:var(--warn)} .stat .val.danger{color:var(--danger)}
 
-/* forms */
 label{font-size:12px;font-weight:600;display:block;margin:12px 0 6px;color:var(--muted)}
-input,select{width:100%;padding:10px 12px;border:1px solid var(--border-2);border-radius:10px;
-  font-size:14px;background:var(--surface-3);color:var(--text);outline:none}
-input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
-input::placeholder{color:var(--subtle)}
+input,select,textarea{width:100%;padding:10px 12px;border:1px solid var(--border-2);border-radius:10px;
+  font-size:14px;background:var(--surface-3);color:var(--text);outline:none;font-family:inherit}
+input:focus,select:focus,textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+input::placeholder,textarea::placeholder{color:var(--subtle)}
 .frow{display:flex;gap:12px;flex-wrap:wrap}
 .frow>div{flex:1;min-width:180px}
+.pwrap{position:relative}
+.pwrap .eye{position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:0;color:var(--subtle);cursor:pointer;font-size:15px;padding:4px}
 .btn{padding:9px 16px;border-radius:10px;border:1px solid transparent;background:var(--accent);color:#fff;
   font-size:13px;font-weight:600;cursor:pointer}
 .btn:hover{background:var(--accent-h)}
@@ -102,8 +99,9 @@ input::placeholder{color:var(--subtle)}
 .btn:disabled{opacity:.45;cursor:default}
 .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .spacer{flex:1}
+.spin{display:inline-block;width:12px;height:12px;border:2px solid var(--border-2);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;vertical-align:-2px}
+@keyframes spin{to{transform:rotate(360deg)}}
 
-/* tables */
 table{width:100%;border-collapse:collapse;font-size:13px}
 th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.03em;color:var(--subtle);
   font-weight:600;padding:8px 10px;border-bottom:1px solid var(--border)}
@@ -113,13 +111,14 @@ td.mono{font-family:ui-monospace,monospace;font-size:12px}
 td.ok{color:var(--ok)} td.danger{color:var(--danger)}
 .tnum{text-align:right;font-variant-numeric:tabular-nums}
 
-/* provider cards */
 .provider{border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:12px;background:var(--surface-3)}
 .provider .head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .provider .name{font-weight:700}
 .provider .id{font-family:ui-monospace,monospace;font-size:12px;color:var(--accent)}
 .provider .url{font-family:ui-monospace,monospace;font-size:12px;color:var(--muted);word-break:break-all;margin:6px 0}
 .provider .meta{font-size:12px;color:var(--subtle)}
+.provider .ping{font-size:11px;color:var(--subtle)}
+.provider .ping.ok{color:var(--ok)} .provider .ping.bad{color:var(--danger)}
 .switch{position:relative;width:40px;height:22px;flex-shrink:0}
 .switch input{opacity:0;width:0;height:0}
 .switch .sl{position:absolute;inset:0;background:var(--border-2);border-radius:99px;cursor:pointer;transition:.2s}
@@ -131,22 +130,30 @@ td.ok{color:var(--ok)} td.danger{color:var(--danger)}
 .metrics .m b{display:block;font-size:15px;color:var(--text)}
 .metrics .m b.ok{color:var(--ok)} .metrics .m b.danger{color:var(--danger)} .metrics .m b.warn{color:var(--warn)}
 
-/* chips / models */
 .models{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
 .chip{font-family:ui-monospace,monospace;font-size:11px;padding:3px 9px;border-radius:7px;
   background:var(--surface-2);border:1px solid var(--border);color:var(--muted)}
 .chip.key{color:var(--ok)}
 
+.snippet{display:flex;align-items:center;gap:8px;background:var(--surface-3);border:1px solid var(--border);
+  border-radius:10px;padding:10px 12px;margin-bottom:8px}
+.snippet .tag{font-size:11px;font-weight:700;color:var(--accent);min-width:90px}
+.snippet code{flex:1;font-size:12px;word-break:break-all;color:var(--muted)}
+
+.playground{display:flex;flex-direction:column;gap:12px}
+.playground .chat{display:flex;gap:8px}
+.playground .chat input{flex:1}
+.pg-output{background:var(--surface-3);border:1px solid var(--border);border-radius:12px;padding:16px;
+  min-height:200px;max-height:50vh;overflow-y:auto;white-space:pre-wrap;font-size:13px;color:var(--text)}
+
 .empty{color:var(--subtle);font-size:13px;text-align:center;padding:26px}
 
-/* kv rows for settings */
 .kv{display:flex;flex-direction:column;gap:10px}
 .kv .item{display:flex;justify-content:space-between;gap:14px;padding:11px 0;border-bottom:1px solid var(--border);font-size:13px}
 .kv .item:last-child{border-bottom:0}
 .kv .lbl{color:var(--muted)}
 .kv .val{font-family:ui-monospace,monospace;word-break:break-all;text-align:right}
 
-/* toast */
 #toast{position:fixed;bottom:20px;right:20px;display:flex;flex-direction:column;gap:8px;z-index:100}
 .toast{background:var(--surface);border:1px solid var(--border-2);border-radius:10px;padding:12px 16px;
   font-size:13px;box-shadow:var(--shadow);max-width:340px;animation:slide .2s ease}
@@ -181,13 +188,13 @@ td.ok{color:var(--ok)} td.danger{color:var(--danger)}
 <div class="tabs">
   <button class="on" data-v="overview" onclick="show('overview')"><span class="ico">&#9678;</span>Overview</button>
   <button data-v="usage" onclick="show('usage')"><span class="ico">&#128200;</span>Usage</button>
+  <button data-v="playground" onclick="show('playground')"><span class="ico">&#9998;</span>Playground</button>
   <button data-v="providers" onclick="show('providers')"><span class="ico">&#9889;</span>Providers</button>
   <button data-v="settings" onclick="show('settings')"><span class="ico">&#9881;</span>Settings</button>
 </div>
 
 <main>
 
-  <!-- ============ OVERVIEW ============ -->
   <section class="view on" id="v-overview">
     <div class="card"><h2>Device Status</h2><div class="grid" id="ov-grid"></div></div>
     <div class="card"><h2>Endpoint</h2>
@@ -196,19 +203,39 @@ td.ok{color:var(--ok)} td.danger{color:var(--danger)}
         <button class="btn ghost" onclick="copyText(epUrl())">Copy</button>
       </div>
     </div>
+    <div class="card"><h2>Quick Client Setup</h2>
+      <div class="desc">One-click snippets to point your tools at NixRoute.</div>
+      <div id="snippets"></div>
+    </div>
     <div class="card"><h2>Provider Health</h2><div id="ov-providers"></div></div>
   </section>
 
-  <!-- ============ USAGE ============ -->
   <section class="view" id="v-usage">
     <div class="card"><h2>Token Usage</h2><div class="grid" id="usage-grid"></div></div>
     <div class="card"><h2>Per Model</h2><div id="usage-models"></div></div>
-    <div class="card"><h2>Recent Requests <span class="count" id="usage-recent-count">0</span></h2>
+    <div class="card"><h2>Live Requests <span class="count" id="usage-recent-count">0</span></h2>
       <div id="usage-recent"></div>
     </div>
   </section>
 
-  <!-- ============ PROVIDERS ============ -->
+  <section class="view" id="v-playground">
+    <div class="card">
+      <h2>Playground</h2>
+      <div class="desc">Test prompts with live streaming against your active providers.</div>
+      <div class="playground">
+        <div>
+          <label>Model</label>
+          <select id="pg-model"></select>
+        </div>
+        <div class="chat">
+          <input id="pg-input" placeholder="Type a prompt…" onkeydown="if(event.key==='Enter')playgroundSend()">
+          <button class="btn" id="pg-send" onclick="playgroundSend()">Send</button>
+        </div>
+        <div class="pg-output" id="pg-output">Response will appear here…</div>
+      </div>
+    </div>
+  </section>
+
   <section class="view" id="v-providers">
     <div class="card">
       <h2 id="prov-form-title">Add Provider</h2>
@@ -217,7 +244,7 @@ td.ok{color:var(--ok)} td.danger{color:var(--danger)}
         <div><label>Base URL</label><input id="p-url" placeholder="https://api.groq.com/openai"></div>
       </div>
       <div class="frow">
-        <div><label>API Key</label><input id="p-key" type="password" placeholder="sk-..."></div>
+        <div><label>API Key</label><div class="pwrap"><input id="p-key" type="password" placeholder="sk-..."><button class="eye" onclick="toggleEye('p-key',this)">&#128065;</button></div></div>
         <div style="min-width:120px;flex:0 0 120px"><label>Active</label>
           <label class="switch" style="margin-top:6px"><input type="checkbox" id="p-active" checked><span class="sl"></span></label>
         </div>
@@ -234,7 +261,6 @@ td.ok{color:var(--ok)} td.danger{color:var(--danger)}
     </div>
   </section>
 
-  <!-- ============ SETTINGS ============ -->
   <section class="view" id="v-settings">
     <div class="card">
       <h2>Local API Token</h2>
@@ -248,14 +274,18 @@ td.ok{color:var(--ok)} td.danger{color:var(--danger)}
       <h2>Wi-Fi</h2>
       <div class="frow">
         <div><label>SSID</label><input id="w-ssid" placeholder="WiFi SSID"></div>
-        <div><label>Password</label><input id="w-pass" type="password" placeholder="WiFi Password"></div>
+        <div><label>Password</label><div class="pwrap"><input id="w-pass" type="password" placeholder="WiFi Password"><button class="eye" onclick="toggleEye('w-pass',this)">&#128065;</button></div></div>
       </div>
       <div class="row" style="margin-top:14px"><button class="btn" onclick="saveWifi()">Save &amp; Reboot</button></div>
     </div>
     <div class="card">
       <h2>Admin Password</h2>
-      <label>New Password</label><input id="a-pass" type="password" placeholder="min 3 characters">
+      <label>New Password</label><div class="pwrap"><input id="a-pass" type="password" placeholder="min 3 characters"><button class="eye" onclick="toggleEye('a-pass',this)">&#128065;</button></div>
       <div class="row" style="margin-top:14px"><button class="btn" onclick="savePassword()">Update</button></div>
+    </div>
+    <div class="card">
+      <h2>System</h2>
+      <div class="row"><button class="btn danger" onclick="rebootDevice()">Reboot ESP32</button><span class="spacer"></span><span style="font-size:12px;color:var(--subtle)">v<span id="foot-ver"></span></span></div>
     </div>
   </section>
 
@@ -275,6 +305,7 @@ async function api(path,opts){opts=opts||{};var r=await fetch(path,opts);
   if(!r.ok)throw new Error((d.error&&d.error.message)||('HTTP '+r.status));return d}
 function post(path,body){return api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})})}
 function epUrl(){return S&&S.wifi.ip?('http://'+S.wifi.ip+'/v1'):''}
+function authHeaders(){var h={'Content-Type':'application/json'};if(S&&S.token.set)h['Authorization']='Bearer '+S.token.full;return h}
 
 function show(v){
   document.querySelectorAll('.view').forEach(function(e){e.classList.remove('on')});
@@ -284,6 +315,8 @@ function show(v){
 }
 
 function copyText(t){if(!t)return;navigator.clipboard.writeText(t).then(function(){toast('Copied','ok')},function(){prompt('Copy:',t)})}
+function toggleEye(id,btn){var el=document.getElementById(id);if(!el)return;
+  if(el.type==='password'){el.type='text';btn.textContent='&#128064;'}else{el.type='password';btn.textContent='&#128065;'}}
 
 function fmtBytes(n){if(n>1048576)return (n/1048576).toFixed(1)+' MB';if(n>1024)return (n/1024).toFixed(1)+' KB';return n+' B'}
 function fmtNum(n){return Number(n||0).toLocaleString('en-US')}
@@ -313,13 +346,15 @@ function renderOverview(){
   var pct=s.heap_total?Math.max(0,Math.min(100,Math.round(s.heap/s.heap_total*100))):50;
   document.getElementById('hdr-heap-fill').style.width=pct+'%';
   document.getElementById('endpoint-url').textContent=epUrl()||'http://<ip>/v1';
+  document.getElementById('foot-ver').textContent=S.version;
+  renderSnippets();
   var op=document.getElementById('ov-providers');op.innerHTML='';
   if(!S.providers.length){op.innerHTML='<div class="empty">No providers yet. Add one in the Providers tab.</div>';return}
   S.providers.forEach(function(p){
     var d=document.createElement('div');d.className='provider';
     var ok=p.metrics.total?Math.round(p.metrics.success/p.metrics.total*100):0;
     d.innerHTML='<div class="head"><span class="name">'+esc(p.name)+'</span><span class="id">'+esc(p.id)+'</span>'+
-      (p.active?'<span class="pill ok" style="margin-left:auto"><span class="dot"></span>active</span>':'<span class="pill off" style="margin-left:auto"><span class="dot"></span>disabled</span>')+'</div>'+
+      (p.cooling?'<span class="pill warn" style="margin-left:auto"><span class="dot"></span>cooling</span>':(p.active?'<span class="pill ok" style="margin-left:auto"><span class="dot"></span>active</span>':'<span class="pill off" style="margin-left:auto"><span class="dot"></span>disabled</span>'))+'</div>'+
       '<div class="metrics">'+
       '<div class="m">Requests<b>'+p.metrics.total+'</b></div>'+
       '<div class="m">Success<b class="ok">'+ok+'%</b></div>'+
@@ -327,6 +362,22 @@ function renderOverview(){
       '<div class="m">Latency<b>'+(p.metrics.last_latency_ms?p.metrics.last_latency_ms+' ms':'—')+'</b></div>'+
       '</div>';
     op.appendChild(d);
+  });
+}
+
+function renderSnippets(){
+  var base=epUrl();var ip=S.wifi.ip||'<ip>';var tk=S.token.full||'<token>';
+  var snippets=[
+    {tag:'Cursor', code:'"openai": {"baseURL": "'+base+'", "apiKey": "'+tk+'"}'},
+    {tag:'Claude Code', code:'export OPENAI_BASE_URL='+base+' OPENAI_API_KEY='+tk},
+    {tag:'Python SDK', code:'OpenAI(base_url="'+base+'", api_key="'+tk+'")'},
+    {tag:'cURL', code:'curl '+base+'/chat/completions -H "Authorization: Bearer '+tk+'" -d \'{"model":"<provider>/<model>","messages":[{"role":"user","content":"hi"}]}\''}
+  ];
+  var el=document.getElementById('snippets');el.innerHTML='';
+  snippets.forEach(function(s){
+    var d=document.createElement('div');d.className='snippet';
+    d.innerHTML='<span class="tag">'+s.tag+'</span><code>'+esc(s.code)+'</code><button class="btn ghost sm" onclick="copyText(this.parentNode.querySelector(\'code\').textContent)">Copy</button>';
+    el.appendChild(d);
   });
 }
 
@@ -350,19 +401,71 @@ function renderUsage(){
     models.forEach(function(m){h+='<tr><td class="mono">'+esc(m.model)+'</td><td class="tnum">'+fmtNum(m.requests)+'</td><td class="tnum">'+fmtNum(m.tokens)+'</td></tr>'});
     h+='</table>';mm.innerHTML=h;
   }
+  renderRecent(u.recent||[]);
+}
 
-  var rc=(u.recent||[]).slice(0,20);
+function renderRecent(recent){
+  var rc=recent.slice(0,20);
   document.getElementById('usage-recent-count').textContent=rc.length;
   var rr=document.getElementById('usage-recent');
-  if(!rc.length){rr.innerHTML='<div class="empty">No requests yet.</div>'}
-  else{
-    var h='<table><tr><th>Model</th><th class="tnum">Prompt</th><th class="tnum">Completion</th><th class="tnum">Total</th><th class="tnum">Latency</th><th></th></tr>';
-    rc.forEach(function(r){
-      var st=r.ok?'<td class="ok">ok</td>':'<td class="danger">fail</td>';
-      h+='<tr><td class="mono">'+esc(r.model)+'</td><td class="tnum">'+fmtNum(r.prompt_tokens)+'</td><td class="tnum">'+fmtNum(r.completion_tokens)+'</td><td class="tnum">'+fmtNum(r.total_tokens)+'</td><td class="tnum">'+(r.latency_ms?r.latency_ms+' ms':'—')+'</td>'+st+'</tr>';
-    });
-    h+='</table>';rr.innerHTML=h;
-  }
+  if(!rc.length){rr.innerHTML='<div class="empty">No requests yet.</div>';return}
+  var h='<table><tr><th>Model</th><th class="tnum">Prompt</th><th class="tnum">Completion</th><th class="tnum">Total</th><th class="tnum">Latency</th><th></th></tr>';
+  rc.forEach(function(r){
+    var st=r.ok?'<td class="ok">ok</td>':'<td class="danger">fail</td>';
+    h+='<tr><td class="mono">'+esc(r.model)+'</td><td class="tnum">'+fmtNum(r.prompt_tokens)+'</td><td class="tnum">'+fmtNum(r.completion_tokens)+'</td><td class="tnum">'+fmtNum(r.total_tokens)+'</td><td class="tnum">'+(r.latency_ms?r.latency_ms+' ms':'—')+'</td>'+st+'</tr>';
+  });
+  h+='</table>';rr.innerHTML=h;
+}
+
+// Live telemetry: prepend a WebSocket event to the recent log.
+function appendLive(d){
+  var rr=document.getElementById('usage-recent');
+  var tbody=rr.querySelector('table');
+  if(!tbody){renderRecent([{model:d.model,prompt_tokens:0,completion_tokens:0,total_tokens:d.tokens,latency_ms:d.latency_ms,ok:d.status==='ok'}]);return}
+  var st=d.status==='ok'?'<td class="ok">ok</td>':'<td class="danger">fail</td>';
+  var row='<tr><td class="mono">'+esc(d.model)+'</td><td class="tnum">0</td><td class="tnum">0</td><td class="tnum">'+fmtNum(d.tokens)+'</td><td class="tnum">'+(d.latency_ms?d.latency_ms+' ms':'—')+'</td>'+st+'</tr>';
+  var first=tbody.querySelector('tr');
+  var tr=document.createElement('tr');tr.innerHTML=row;
+  tbody.insertBefore(tr, first);
+  // trim to 20 rows
+  var rows=tbody.querySelectorAll('tr');
+  for(var i=20;i<rows.length;i++)rows[i].remove();
+  document.getElementById('usage-recent-count').textContent=tbody.querySelectorAll('tr').length;
+}
+
+/* ---------- Playground ---------- */
+function renderPlayground(){
+  var sel=document.getElementById('pg-model');sel.innerHTML='';
+  S.providers.forEach(function(p){
+    if(!p.active)return;
+    (p.models||[]).forEach(function(m){var o=document.createElement('option');o.value=m;o.textContent=m;sel.appendChild(o)});
+  });
+}
+
+async function playgroundSend(){
+  var model=document.getElementById('pg-model').value;
+  var msg=document.getElementById('pg-input').value;
+  if(!model){toast('Pick a model first','error');return}
+  if(!msg){toast('Type a prompt','error');return}
+  var out=document.getElementById('pg-output');out.textContent='';
+  var btn=document.getElementById('pg-send');btn.disabled=true;btn.textContent='…';
+  try{
+    var resp=await fetch('/v1/chat/completions',{method:'POST',headers:authHeaders(),
+      body:JSON.stringify({model:model,messages:[{role:'user',content:msg}],stream:true})});
+    if(!resp.ok){var e=await resp.json().catch(function(){return{}});throw new Error((e.error&&e.error.message)||('HTTP '+resp.status))}
+    var reader=resp.body.getReader();var dec=new TextDecoder();var buf='';
+    while(true){
+      var r=await reader.read();if(r.done)break;
+      buf+=dec.decode(r.value,{stream:true});
+      var lines=buf.split('\n');buf=lines.pop();
+      for(var i=0;i<lines.length;i++){
+        var l=lines[i];if(l.indexOf('data:')!==0)continue;
+        var d=l.slice(5).trim();if(d==='[DONE]')continue;
+        try{var j=JSON.parse(d);var delta=j.choices&&j.choices[0]&&j.choices[0].delta&&j.choices[0].delta.content;if(delta)out.textContent+=delta}catch(_){}
+      }
+    }
+  }catch(err){out.textContent='Error: '+err.message}
+  btn.disabled=false;btn.textContent='Send';
 }
 
 /* ---------- Providers ---------- */
@@ -377,12 +480,15 @@ function renderProviders(){
     else models='<div class="empty" style="padding:10px;text-align:left">No models cached — click Sync Models.</div>';
     d.innerHTML='<div class="head">'+
       '<label class="switch"><input type="checkbox" '+(p.active?'checked':'')+' onchange="toggleProvider(\''+esc(p.id)+'\',this.checked)"><span class="sl"></span></label>'+
-      '<span class="name">'+esc(p.name)+'</span><span class="id">'+esc(p.id)+'</span><span class="spacer"></span>'+
-      '<button class="btn ghost sm" onclick="syncModels(\''+esc(p.id)+'\')">Sync Models</button>'+
+      '<span class="name">'+esc(p.name)+'</span><span class="id">'+esc(p.id)+'</span>'+
+      (p.cooling?'<span class="pill warn"><span class="dot"></span>cooling</span>':'')+
+      '<span class="spacer"></span>'+
+      '<button class="btn ghost sm" onclick="pingProvider(\''+esc(p.id)+'\',this)" title="Test latency &amp; key">&#9889;</button>'+
+      '<button class="btn ghost sm" onclick="syncModels(\''+esc(p.id)+'\',this)">Sync Models</button>'+
       '<button class="btn ghost sm" onclick="editProvider(\''+esc(p.id)+'\')">Edit</button>'+
       '<button class="btn danger sm" onclick="removeProvider(\''+esc(p.id)+'\')">Delete</button></div>'+
       '<div class="url">'+esc(p.url)+'</div>'+
-      '<div class="meta">API Key: '+(p.has_key?('<span class="chip key">'+esc(p.key_masked)+'</span>'):'<span style="color:var(--danger)">not set</span>')+' · '+p.models.length+' models</div>'+
+      '<div class="meta">API Key: '+(p.has_key?('<span class="chip key">'+esc(p.key_masked)+'</span>'):'<span style="color:var(--danger)">not set</span>')+' · '+p.models.length+' models · <span class="ping" id="ping-'+esc(p.id)+'"></span></div>'+
       '<div class="metrics">'+
       '<div class="m">Requests<b>'+p.metrics.total+'</b></div>'+
       '<div class="m">Success<b class="ok">'+p.metrics.success+'</b></div>'+
@@ -430,10 +536,20 @@ function editProvider(id){
   show('providers');document.getElementById('p-name').focus();
 }
 
-async function syncModels(id){toast('Syncing models for '+id+'...');
+async function syncModels(id,btn){
+  if(btn){btn.disabled=true;btn.innerHTML='<span class="spin"></span>'}
   try{var r=await post('/api/providers/fetch',{id:id});
     if(r.ok)toast(id+': '+r.count+' models','ok');else toast(id+': '+r.error,'error');await load()}
-  catch(e){toast(e.message,'error')}}
+  catch(e){toast(e.message,'error');if(btn){btn.disabled=false;btn.textContent='Sync Models'}}
+}
+
+async function pingProvider(id,btn){
+  var el=document.getElementById('ping-'+id);if(el)el.textContent='…';
+  try{
+    var r=await post('/api/providers/ping',{id:id});
+    if(el){el.textContent=r.ok?('⚡ '+r.latency_ms+' ms'):('HTTP '+r.status);el.className='ping '+(r.ok?'ok':'bad')}
+  }catch(e){if(el){el.textContent=e.message;el.className='ping bad'}}
+}
 
 async function toggleProvider(id,on){
   try{await post('/api/providers/toggle',{id:id,active:on});toast('Provider '+(on?'enabled':'disabled'),'ok');await load()}
@@ -464,15 +580,30 @@ async function savePassword(){
   var p=document.getElementById('a-pass').value;
   if(p.length<3){toast('Password min 3 characters','error');return}
   try{await post('/api/password',{password:p});toast('Password updated','ok');document.getElementById('a-pass').value=''}catch(e){toast(e.message,'error')}}
+async function rebootDevice(){
+  if(!confirm('Reboot the ESP32?'))return;
+  try{await post('/api/reboot');toast('Rebooting…','ok')}catch(e){toast(e.message,'error')}}
 
 /* ---------- render + init ---------- */
-function render(){renderOverview();renderUsage();renderProviders();renderSettings()}
-async function load(){try{S=await api('/api/state');render()}catch(e){toast('Failed to load: '+e.message,'error')}}
+function render(){renderOverview();renderUsage();renderPlayground();renderProviders();renderSettings()}
+async function load(){try{S=await api('/api/state');render();connectWs()}catch(e){toast('Failed to load: '+e.message,'error')}}
+
+var ws;
+function connectWs(){
+  if(ws){try{ws.close()}catch(_){}}
+  if(!S||!S.wifi.ip)return;
+  try{
+    ws=new WebSocket('ws://'+S.wifi.ip+':81');
+    ws.onmessage=function(ev){try{var d=JSON.parse(ev.data);if(d.type==='request')appendLive(d)}catch(_){}};
+    ws.onclose=function(){setTimeout(function(){if(S&&S.wifi.ip)connectWs()},3000)};
+  }catch(_){}
+}
 
 (function init(){
   var v=(location.hash||'').replace('#/','');
-  if(['overview','usage','providers','settings'].indexOf(v)<0)v='overview';
-  show(v);load();setInterval(load,15000);
+  if(['overview','usage','playground','providers','settings'].indexOf(v)<0)v='overview';
+  show(v);load();
+  setInterval(function(){if(!S)return;api('/api/state').then(function(d){S=d;render()},function(){})},30000);
 })();
 </script>
 </body>

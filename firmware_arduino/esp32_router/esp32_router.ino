@@ -172,12 +172,7 @@ void handleLogout(){
   server.send(303,"","");
 }
 
-// ---- Dashboard 9router-style ----
-String getActiveClass(const String& uri, const String& key){
-  if(key=="routes" && (uri=="/"||uri=="/dashboard"||uri=="/dashboard/endpoint")) return "on";
-  if(uri.indexOf(key)>=0) return "on";
-  return "";
-}
+// ---- Dashboard SPA (section-based) ----
 void handleRoot(){
   if(!isAuthenticated()){
     server.sendHeader("Location","/login");
@@ -199,11 +194,16 @@ void handleRoot(){
 .rail{width:72px;background:var(--c-surface);border-right:1px solid var(--c-border-sub);display:flex;flex-direction:column;align-items:center;padding:14px 0;gap:6px;position:sticky;top:0;height:100vh}
 .rail a{width:56px;height:56px;border-radius:12px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;font-size:10px;font-weight:600;letter-spacing:.2px;color:var(--c-muted);text-decoration:none}
 .rail a.on{background:var(--c-data-soft);color:var(--c-primary);border:1px solid #c9f3f6}
+.dark .rail a.on{border-color:#0f4a52}
 .rail a:hover{background:var(--c-surface-2);color:var(--c-text)}
 .main{flex:1;min-width:0;background:var(--c-bg)}
 .header{position:sticky;top:0;background:var(--c-surface);border-bottom:1px solid var(--c-border-sub);padding:14px 16px;display:flex;justify-content:space-between;align-items:center;backdrop-filter:saturate(1.2)}
 .logo{display:flex;align-items:center;gap:10px;font-weight:800;letter-spacing:.2px}
-.wrap{max-width:880px;margin:18px auto;padding:0 16px;display:flex;flex-direction:column;gap:14px}
+.tbtn{width:36px;height:36px;border-radius:10px;border:1px solid var(--c-border);background:var(--c-surface);font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--c-text)}
+.tbtn:hover{background:var(--c-surface-2)}
+.sep{width:40px;height:1px;background:var(--c-border-sub);margin:6px 0}
+.wrap{max-width:880px;margin:18px auto;padding:0 16px}
+.page{display:none}.page.on{display:flex;flex-direction:column;gap:14px}
 .card{background:var(--c-surface);border:1px solid var(--c-border-sub);border-radius:16px;padding:16px;box-shadow:var(--sh)}
 .card h2{font-size:13px;font-weight:700;letter-spacing:.2px;margin:0 0 12px;display:flex;align-items:center;gap:8px;color:var(--c-text)}
 .row{display:flex;align-items:center;gap:8px;margin:8px 0;flex-wrap:wrap}
@@ -219,26 +219,28 @@ void handleRoot(){
 .ok{color:#147a5b}.warn{color:#9a6817}
 @media(max-width:640px){.rail{display:none}}
 </style></head><body><div class=shell><aside class=rail>
-<a href="/dashboard/endpoint" class=on><span style="width:28px;height:28px;display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 500 500" width="28" height="28"><rect x="70" y="70" width="92" height="375" rx="46" fill="#0c1a30"/><rect x="338" y="70" width="92" height="375" rx="46" fill="#0c1a30"/><line x1="125" y1="130" x2="375" y2="380" stroke="#0c1a30" stroke-width="96" stroke-linecap="round"/><line x1="125" y1="130" x2="375" y2="380" stroke="#fff" stroke-width="18" stroke-linecap="round"/><circle cx="125" cy="130" r="34" fill="#0c1a30" stroke="#fff" stroke-width="14"/><circle cx="125" cy="130" r="16" fill="#00a8b5"/><circle cx="250" cy="255" r="34" fill="#0c1a30" stroke="#fff" stroke-width="14"/><circle cx="250" cy="255" r="16" fill="#00a8b5"/><circle cx="375" cy="380" r="34" fill="#0c1a30" stroke="#fff" stroke-width="14"/><circle cx="375" cy="380" r="16" fill="#00a8b5"/></svg></span>Routes</a>
-<a href="/dashboard/providers"><span>🗄️</span>Providers</a>
-<a href="/dashboard/policies"><span>🧩</span>Policies</a>
-<a href="/dashboard/usage"><span>📊</span>Observe</a>
-<a href="/dashboard/tools"><span>🔧</span>Tools</a>
+<a href="/dashboard/endpoint" data-page="endpoint" onclick="nav('endpoint');return false"><span style="width:28px;height:28px;display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 500 500" width="28" height="28"><rect x="70" y="70" width="92" height="375" rx="46" fill="#0c1a30"/><rect x="338" y="70" width="92" height="375" rx="46" fill="#0c1a30"/><line x1="125" y1="130" x2="375" y2="380" stroke="#0c1a30" stroke-width="96" stroke-linecap="round"/><line x1="125" y1="130" x2="375" y2="380" stroke="#fff" stroke-width="18" stroke-linecap="round"/><circle cx="125" cy="130" r="34" fill="#0c1a30" stroke="#fff" stroke-width="14"/><circle cx="125" cy="130" r="16" fill="#00a8b5"/><circle cx="250" cy="255" r="34" fill="#0c1a30" stroke="#fff" stroke-width="14"/><circle cx="250" cy="255" r="16" fill="#00a8b5"/><circle cx="375" cy="380" r="34" fill="#0c1a30" stroke="#fff" stroke-width="14"/><circle cx="375" cy="380" r="16" fill="#00a8b5"/></svg></span>Routes</a>
+<a href="/dashboard/providers" data-page="providers" onclick="nav('providers');return false"><span>🗄️</span>Providers</a>
+<a href="/dashboard/policies" data-page="policies" onclick="nav('policies');return false"><span>🧩</span>Policies</a>
+<a href="/dashboard/usage" data-page="usage" onclick="nav('usage');return false"><span>📊</span>Observe</a>
+<a href="/dashboard/tools" data-page="tools" onclick="nav('tools');return false"><span>🔧</span>Tools</a>
+<div class=sep></div>
+<a href="/dashboard/settings" data-page="settings" onclick="nav('settings');return false"><span>⚙️</span>Settings</a>
 <div style="flex:1"></div>
 <a href="/admin/logout" style="color:#888;font-size:10px">Logout</a>
-</aside><div class=main><div class=header><div class=logo>NixRoute ESP32 <span style="font-weight:400;color:#666">— SuprimX · nixroute 1.0.0</span></div><div style="font-size:12px;color:#666">)HTML") + ip + R"HTML(</div></div><div class=wrap>)HTML"
-  + "<div class=card id=\"routes\"><h2>◉ API Endpoint — Routes</h2>"
-  + "<div class=row><span class='badge on'>Local</span><div class=mono>http://"+ip+"/v1</div><button class='btn ghost' onclick=\"navigator.clipboard.writeText('http://"+ip+"/v1')\">Copy</button></div>"
+</aside><div class=main><div class=header><div class=logo>NixRoute ESP32 <span style="font-weight:400;color:#666">— SuprimX · nixroute 1.0.0</span></div><div style="display:flex;align-items:center;gap:10px"><div style="font-size:12px;color:#666">)HTML") + ip + R"HTML(</div><button class=tbtn onclick="toggleTheme()" title="Dark mode">🌓</button></div></div><div class=wrap>)HTML"
+  + "<section class=\"page\" id=\"page-endpoint\"><div class=card><h2>◉ API Endpoint — Routes</h2>"
+  + "<div class=row><span class='badge on'>Local</span><div class=mono>http://"+ip+"/v1</div><button class='btn ghost' onclick=\"copyEndpoint('http://"+ip+"/v1')\">Copy</button></div>"
   + "<div class=row><span class=badge>WiFi</span><div class=mono>"+(conn?ip+" · RSSI "+WiFi.RSSI()+"dBm":"disconnected")+"</div><span class='small "+(conn?"ok":"warn")+"'>"+(conn?"connected":"disconnected")+"</span></div>"
-  + "<div class=kv><div><b>Uptime</b> "+(millis()/1000)+"s</div><div><b>Heap</b> "+ESP.getFreeHeap()+"</div><div><b>Requests</b> "+reqTotal+" ("+reqOk+" ok / "+reqFail+" fail)</div><div><b>IP</b> "+ip+"</div></div></div>"
+  + "<div class=kv><div><b>Uptime</b> "+(millis()/1000)+"s</div><div><b>Heap</b> "+ESP.getFreeHeap()+"</div><div><b>Requests</b> "+reqTotal+" ("+reqOk+" ok / "+reqFail+" fail)</div><div><b>IP</b> "+ip+"</div></div></div></section>"
 
-  + "<div class=card><h2>🔑 API Keys — Require API key: "+String(g_localToken.length()?"ON":"OFF")+"</h2>"
+  + "<section class=\"page\" id=\"page-providers\"><div class=card><h2>🔑 API Keys — Require API key: "+String(g_localToken.length()?"ON":"OFF")+"</h2>"
   + "<div class=row><span class=badge>Local Token</span><div class=mono>"+tokenMask+"</div><form method=POST action=/admin/token/generate style='display:inline'><button class=btn>Generate</button></form><form method=POST action=/admin/token/clear style='display:inline'><button class='btn ghost'>Clear</button></form></div>"
   + (g_localToken.length()?"<div class=mono style='font-size:11px;word-break:break-all'>"+g_localToken+"</div>":"<div class=small>Open — client tidak perlu Authorization</div>")
   + "<div class=small style='margin:8px 0'>Client: <code>Authorization: Bearer TOKEN</code> atau <code>OPENAI_API_KEY=TOKEN</code> + <code>OPENAI_BASE_URL=http://"+ip+"/v1</code> — <code>curl -H \"Authorization: Bearer "+(g_localToken.length()?g_localToken:"TOKEN")+"\" http://"+ip+"/v1/models</code></div>"
   + "</div>"
 
-  + "<div class=card id=\"providers\"><h2>🔌 Providers</h2>"
+  + "<div class=card><h2>🔌 Providers</h2>"
   + "<div class=row><span class=badge>DeepSeek</span><div class=mono>"+dsMask+"</div></div>"
   + "<div class=row><span class=badge>OpenRouter</span><div class=mono>"+orMask+"</div></div>"
   + "<div class=row><span class=badge>Custom</span><div class=mono style='font-size:12px'>"+cuMask+"</div></div>"
@@ -248,20 +250,30 @@ void handleRoot(){
   + "<input class=input name=custom_url placeholder='Custom https://bandelbanget.xyz/v1'>"
   + "<input class=input name=custom_key placeholder='Custom sk-...'>"
   + "<button class=btn>Simpan Keys</button> <span class=small>pakai model <code>custom-*</code> / <code>bandel-*</code> untuk custom</span>"
-  + "</form></div>"
+  + "</form></div></section>"
 
-  + "<div class=card id=\"policies\"><h2>🧩 Policies — Routing</h2><div class=small><code>deepseek-*</code> → DeepSeek &nbsp; <code>openrouter-*/claude-*/gemini-*</code> → OpenRouter &nbsp; <code>custom-*/bandel-*</code> → Custom ("+ (g_customUrl.length()?g_customUrl:"(custom kosong)") +")</div><div class=small>Fallback: DeepSeek → OpenRouter → Custom (sebelum byte pertama)</div></div>"
+  + "<section class=\"page\" id=\"page-policies\"><div class=card><h2>🧩 Policies — Routing</h2><div class=small><code>deepseek-*</code> → DeepSeek &nbsp; <code>openrouter-*/claude-*/gemini-*</code> → OpenRouter &nbsp; <code>custom-*/bandel-*</code> → Custom ("+ (g_customUrl.length()?g_customUrl:"(custom kosong)") +")</div><div class=small>Fallback: DeepSeek → OpenRouter → Custom (sebelum byte pertama)</div></div></section>"
 
-  + "<div class=card id=\"observe\"><h2>📊 Observe — Usage</h2><div class=kv><div><b>Total</b> "+reqTotal+"</div><div><b>OK</b> "+reqOk+"</div><div><b>Fail</b> "+reqFail+"</div><div><b>Heap</b> "+ESP.getFreeHeap()+"</div></div><div class=small>GET <code>/health</code> · <code>/admin/status</code> untuk JSON</div></div>"
+  + "<section class=\"page\" id=\"page-usage\"><div class=card><h2>📊 Observe — Usage</h2><div class=kv><div><b>Total</b> "+reqTotal+"</div><div><b>OK</b> "+reqOk+"</div><div><b>Fail</b> "+reqFail+"</div><div><b>Heap</b> "+ESP.getFreeHeap()+"</div></div><div class=small>GET <code>/health</code> · <code>/admin/status</code> untuk JSON</div></div></section>"
 
-  + "<div class=card id=\"tools\"><h2>🔧 Tools</h2><div class=small><code>curl http://"+ip+"/health</code> · <code>curl -H \"Authorization: Bearer TOKEN\" http://"+ip+"/v1/models</code> · <code>POST /v1/chat/completions</code></div><div class=small>OpenAI SDK: <code>OPENAI_BASE_URL=http://"+ip+"/v1</code></div></div>"
+  + "<section class=\"page\" id=\"page-tools\"><div class=card><h2>🔧 Tools</h2><div class=small><code>curl http://"+ip+"/health</code> · <code>curl -H \"Authorization: Bearer TOKEN\" http://"+ip+"/v1/models</code> · <code>POST /v1/chat/completions</code></div><div class=small>OpenAI SDK: <code>OPENAI_BASE_URL=http://"+ip+"/v1</code></div></div></section>"
 
-  + "<div class=card><h2>🛡 Settings</h2>"
+  + "<section class=\"page\" id=\"page-settings\"><div class=card><h2>🛡 Settings</h2>"
   + "<form method=POST action=/admin/password><div class=row><input class=input name=new_pass placeholder='Ganti password dashboard (default 123456)'><button class=btn>Update Password</button></div></form>"
   + "<div class=small>GET <code>/health</code> · <code>GET /v1/models</code> · <code>POST /v1/chat/completions</code> · <code>GET /admin/status</code></div>"
   + "</div>"
+  + "<div class=card><h2>ℹ️ About</h2><div class=kv><div><b>Version</b> nixroute 1.0.0</div><div><b>IP</b> "+ip+"</div><div><b>Uptime</b> "+(millis()/1000)+"s</div><div><b>Heap</b> "+ESP.getFreeHeap()+"</div></div></div></section>"
 
-  + "<script>try{if(localStorage.getItem(\"nixroute-theme\")==\"dark\"||(!localStorage.getItem(\"nixroute-theme\")&&matchMedia(\"(prefers-color-scheme:dark)\").matches))document.documentElement.classList.add(\"dark\")}catch(e){}</script>"
+  + "<script>"
+  + "function getPage(){var p=location.pathname.split('/').pop();if(!p||p==='dashboard'||p==='endpoint')return 'endpoint';return p;}"
+  + "function showPage(p){var s=document.querySelectorAll('.page');for(var i=0;i<s.length;i++)s[i].classList.remove('on');var el=document.getElementById('page-'+p)||document.getElementById('page-endpoint');if(el)el.classList.add('on');var a=document.querySelectorAll('.rail a[data-page]');for(var j=0;j<a.length;j++){if(a[j].getAttribute('data-page')===p)a[j].classList.add('on');else a[j].classList.remove('on');}}"
+  + "function nav(p){try{history.pushState({page:p},'','/dashboard/'+p)}catch(e){location.href='/dashboard/'+p}showPage(p);}"
+  + "function toggleTheme(){var d=document.documentElement.classList.toggle('dark');try{localStorage.setItem('nixroute-theme',d?'dark':'light')}catch(e){}}"
+  + "function copyEndpoint(t){try{navigator.clipboard.writeText(t)}catch(e){prompt('Copy:',t)}}"
+  + "window.addEventListener('popstate',function(){showPage(getPage())});"
+  + "try{if(localStorage.getItem('nixroute-theme')==='dark'||(!localStorage.getItem('nixroute-theme')&&matchMedia('(prefers-color-scheme:dark)').matches))document.documentElement.classList.add('dark')}catch(e){}"
+  + "showPage(getPage());"
+  + "</script>"
   + "</div></div></body></html>";
   server.sendHeader("Cache-Control","no-store");
   server.send(200,"text/html",html);
@@ -303,6 +315,7 @@ void setup(){
   server.on("/dashboard/policies", HTTP_GET, handleRoot);
   server.on("/dashboard/usage", HTTP_GET, handleRoot);
   server.on("/dashboard/tools", HTTP_GET, handleRoot);
+  server.on("/dashboard/settings", HTTP_GET, handleRoot);
   server.on("/login", HTTP_GET, handleLogin);
   server.on("/admin/login", HTTP_POST, handleLoginPost);
   server.on("/admin/logout", HTTP_GET, handleLogout);

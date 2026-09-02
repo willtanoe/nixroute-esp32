@@ -84,7 +84,7 @@ String slugify(const String& s) {
   r.reserve(s.length());
   for (unsigned i = 0; i < s.length(); i++) {
     char c = s[i];
-    if (isalnum((unsigned char)c)) r += tolower((unsigned char)c);
+    if (isalnum((unsigned char)c)) r += (char)tolower((unsigned char)c);
     else if (c == ' ' || c == '-' || c == '_' || c == '.') {
       if (r.length() && r[r.length() - 1] != '-') r += '-';
     }
@@ -171,6 +171,17 @@ void loadProviders() {
       }
     }
   }
+  // auto-heal: regenerate any id that drifted from slugify(name) (e.g. the
+  // old tolower(int) bug that stored ASCII decimal codes instead of chars).
+  bool healed = false;
+  for (int i = 0; i < g_providerCount; i++) {
+    String sid = slugify(g_providers[i].name);
+    if (sid != g_providers[i].id) {
+      g_providers[i].id = sid;
+      healed = true;
+    }
+  }
+  if (healed) saveProviders();
   for (int i = 0; i < g_providerCount; i++) {
     String k = "models_" + g_providers[i].id;
     prefs.begin("gateway", true);

@@ -140,7 +140,18 @@ void handleNotFound(){ sendJson(404,"{\"error\":{\"message\":\"not found\"}}"); 
 
 // ---- Login ----
 void handleLogin(){
-  String html=R"HTML(<!doctype html><html><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>Login — ESP32 Router</title><style>body{font-family:system-ui,sans-serif;background:#f6f6f3;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0} .card{background:#fff;border:1px solid #e5e5e5;border-radius:16px;padding:24px;width:360px;box-shadow:0 4px 16px rgba(0,0,0,.06)} h1{font-size:20px;margin:0 0 8px} p{color:#666;font-size:13px} input{width:100%;padding:10px 12px;border:1px solid #ddd;border-radius:10px;margin:12px 0;box-sizing:border-box} button{width:100%;padding:10px;border:0;border-radius:10px;background:#111;color:#fff;cursor:pointer} .hint{font-size:12px;color:#888;margin-top:8px}</style></head><body><div class=card><h1>ESP32 Router</h1><p>Masukkan password dashboard</p><form method=POST action=/admin/login><input name=password type=password placeholder="Password" required><button>Masuk</button></form><p class=hint>Default: <code>123456</code> — ganti di Settings setelah login</p></div></body></html>)HTML";
+  String html=R"HTML(<!doctype html><html><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>Login — NixRoute ESP32</title><style>
+:root{--c-bg:#f5f8fc;--c-surface:#ffffff;--c-border:#c7d3e0;--c-border-sub:#dde6ef;--c-text:#0c1a30;--c-muted:#52657d;--c-primary:#00a8b5;--c-primary-h:#008b97;--r:8px;--r-lg:12px;--sh:0 1px 2px rgba(12,26,48,.06);--sh-el:0 8px 24px rgba(12,26,48,.12)}
+*{box-sizing:border-box}body{margin:0;font-family:"IBM Plex Sans",system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--c-bg);color:var(--c-text);display:flex;align-items:center;justify-content:center;min-height:100vh}
+.card{width:380px;background:var(--c-surface);border:1px solid var(--c-border-sub);border-radius:16px;padding:28px;box-shadow:var(--sh-el)}
+.logo{display:flex;align-items:center;gap:12px;margin-bottom:20px}.logo svg{width:36px;height:36px}
+h1{font-size:18px;font-weight:700;margin:0} .sub{font-size:13px;color:var(--c-muted);margin:6px 0 18px}
+label{font-size:12px;font-weight:600;color:var(--c-text);display:block;margin:12px 0 6px}
+.input{width:100%;padding:11px 12px;border:1px solid var(--c-border);border-radius:10px;font-size:14px;background:#fff;outline:none}
+.input:focus{border-color:var(--c-primary);box-shadow:0 0 0 3px rgba(0,168,181,.18)}
+.btn{width:100%;padding:11px;border-radius:10px;border:0;background:var(--c-primary);color:#fff;font-weight:600;font-size:14px;cursor:pointer;margin-top:14px}
+.btn:hover{background:var(--c-primary-h)} .hint{font-size:11px;color:var(--c-muted);margin-top:12px;text-align:center} code{background:#f0f4f8;padding:1px 5px;border-radius:6px;font-size:11px}
+</style></head><body><div class=card><div class=logo><svg viewBox="0 0 500 500" width="36" height="36"><rect x="70" y="70" width="92" height="375" rx="46" fill="#0c1a30"/><rect x="338" y="70" width="92" height="375" rx="46" fill="#0c1a30"/><line x1="125" y1="130" x2="375" y2="380" stroke="#0c1a30" stroke-width="96" stroke-linecap="round"/><line x1="125" y1="130" x2="375" y2="380" stroke="#fff" stroke-width="18" stroke-linecap="round"/><circle cx="125" cy="130" r="34" fill="#0c1a30" stroke="#fff" stroke-width="14"/><circle cx="125" cy="130" r="16" fill="#00a8b5"/><circle cx="250" cy="255" r="34" fill="#0c1a30" stroke="#fff" stroke-width="14"/><circle cx="250" cy="255" r="16" fill="#00a8b5"/><circle cx="375" cy="380" r="34" fill="#0c1a30" stroke="#fff" stroke-width="14"/><circle cx="375" cy="380" r="16" fill="#00a8b5"/></svg><div><div style="font-weight:800;letter-spacing:.2px">NixRoute</div><div style="font-size:11px;color:var(--c-muted)">ESP32 · SuprimX</div></div></div><h1>Masuk Dashboard</h1><p class=sub>Password default <code>123456</code></p><form method=POST action=/admin/login><label>Password</label><input class=input name=password type=password placeholder="••••••" required autofocus><button class=btn>Masuk</button></form><p class=hint>Ganti password di Settings setelah login untuk keamanan</p></div></body></html>)HTML";
   server.send(200,"text/html",html);
 }
 void handleLoginPost(){
@@ -173,27 +184,30 @@ void handleRoot(){
   String orMask=g_openrouterKey.length()?maskKey(g_openrouterKey):"kosong";
   String cuMask=g_customUrl.length()?(g_customUrl+" <code>"+maskKey(g_customKey)+"</code>"):"kosong";
   String html = String(R"HTML(<!doctype html><html><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>NixRoute ESP32</title><style>
-*{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#f6f6f3;color:#111}
+*{box-sizing:border-box}body{margin:0;font-family:"IBM Plex Sans",system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--c-bg);color:var(--c-text)}
+:root{--c-bg:#f5f8fc;--c-surface:#ffffff;--c-surface-2:#f0f4f8;--c-border:#c7d3e0;--c-border-sub:#dde6ef;--c-text:#0c1a30;--c-muted:#52657d;--c-subtle:#7d8da2;--c-primary:#00a8b5;--c-primary-h:#008b97;--c-data-soft:#e8fbfc;--r:8px;--r-lg:12px;--sh:0 1px 2px rgba(12,26,48,.06);--sh-el:0 8px 24px rgba(12,26,48,.12)}
 .shell{display:flex;min-height:100vh}
-.rail{width:72px;background:#fff;border-right:1px solid #e5e5e5;display:flex;flex-direction:column;align-items:center;padding:12px 0;gap:4px;position:sticky;top:0;height:100vh}
-.rail a{width:56px;height:56px;border-radius:12px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;font-size:10px;font-weight:500;color:#6b7280;text-decoration:none}
-.rail a.on{background:#eef6ff;color:#0ea5e9}
-.main{flex:1;min-width:0}
-.header{position:sticky;top:0;background:#fff;border-bottom:1px solid #e5e5e5;padding:12px 16px;display:flex;justify-content:space-between;align-items:center}
-.logo{display:flex;align-items:center;gap:10px;font-weight:700}
-.wrap{max-width:880px;margin:16px auto;padding:0 16px;display:flex;flex-direction:column;gap:16px}
-.card{background:#fff;border:1px solid #e5e5e5;border-radius:16px;padding:16px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
-.card h2{font-size:14px;font-weight:600;margin:0 0 12px;display:flex;align-items:center;gap:8px}
+.rail{width:72px;background:var(--c-surface);border-right:1px solid var(--c-border-sub);display:flex;flex-direction:column;align-items:center;padding:14px 0;gap:6px;position:sticky;top:0;height:100vh}
+.rail a{width:56px;height:56px;border-radius:12px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;font-size:10px;font-weight:600;letter-spacing:.2px;color:var(--c-muted);text-decoration:none}
+.rail a.on{background:var(--c-data-soft);color:var(--c-primary);border:1px solid #c9f3f6}
+.rail a:hover{background:var(--c-surface-2);color:var(--c-text)}
+.main{flex:1;min-width:0;background:var(--c-bg)}
+.header{position:sticky;top:0;background:var(--c-surface);border-bottom:1px solid var(--c-border-sub);padding:14px 16px;display:flex;justify-content:space-between;align-items:center;backdrop-filter:saturate(1.2)}
+.logo{display:flex;align-items:center;gap:10px;font-weight:800;letter-spacing:.2px}
+.wrap{max-width:880px;margin:18px auto;padding:0 16px;display:flex;flex-direction:column;gap:14px}
+.card{background:var(--c-surface);border:1px solid var(--c-border-sub);border-radius:16px;padding:16px;box-shadow:var(--sh)}
+.card h2{font-size:13px;font-weight:700;letter-spacing:.2px;margin:0 0 12px;display:flex;align-items:center;gap:8px;color:var(--c-text)}
 .row{display:flex;align-items:center;gap:8px;margin:8px 0;flex-wrap:wrap}
-.badge{font-size:11px;font-family:monospace;padding:2px 8px;border-radius:999px;background:#f0f0f0;min-width:78px;text-align:center}
-.badge.on{background:#e6f4ea;color:#137333}.mono{font-family:monospace;font-size:13px;background:#f6f6f3;border:1px solid #e5e5e5;border-radius:10px;padding:8px 10px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.btn{padding:7px 12px;border-radius:10px;border:1px solid #0ea5e9;background:#0ea5e9;color:#fff;font-size:13px;cursor:pointer}
-.btn.ghost{background:#fff;color:#111;border:1px solid #ddd}
-.input{width:100%;padding:8px 10px;border:1px solid #ddd;border-radius:10px;font-size:13px}
-.kv{display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12px;color:#666}
-.kv b{color:#111}
-.small{font-size:12px;color:#666}
-.ok{color:#137333}.warn{color:#b06000}
+.badge{font-size:11px;font-family:monospace;padding:3px 8px;border-radius:999px;background:var(--c-surface-2);border:1px solid var(--c-border-sub);min-width:78px;text-align:center;color:var(--c-muted)}
+.badge.on{background:var(--c-data-soft);color:var(--c-primary);border-color:#c9f3f6}.mono{font-family:"IBM Plex Mono",monospace;font-size:12px;background:var(--c-surface-2);border:1px solid var(--c-border-sub);border-radius:10px;padding:8px 10px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.btn{padding:8px 12px;border-radius:10px;border:1px solid var(--c-primary);background:var(--c-primary);color:#fff;font-size:12px;font-weight:600;cursor:pointer}
+.btn:hover{background:var(--c-primary-h)} .btn.ghost{background:var(--c-surface);color:var(--c-text);border:1px solid var(--c-border)}
+.input{width:100%;padding:9px 10px;border:1px solid var(--c-border);border-radius:10px;font-size:13px;background:var(--c-surface)}
+.input:focus{outline:none;border-color:var(--c-primary);box-shadow:0 0 0 3px rgba(0,168,181,.15)}
+.kv{display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12px;color:var(--c-muted)}
+.kv b{color:var(--c-text)}
+.small{font-size:12px;color:var(--c-muted);line-height:1.5}
+.ok{color:#147a5b}.warn{color:#9a6817}
 @media(max-width:640px){.rail{display:none}}
 </style></head><body><div class=shell><aside class=rail>
 <a href="/" class=on><span style="width:28px;height:28px;display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 500 500" width="28" height="28"><rect x="70" y="70" width="92" height="375" rx="46" fill="#0c1a30"/><rect x="338" y="70" width="92" height="375" rx="46" fill="#0c1a30"/><line x1="125" y1="130" x2="375" y2="380" stroke="#0c1a30" stroke-width="96" stroke-linecap="round"/><line x1="125" y1="130" x2="375" y2="380" stroke="#fff" stroke-width="18" stroke-linecap="round"/><circle cx="125" cy="130" r="34" fill="#0c1a30" stroke="#fff" stroke-width="14"/><circle cx="125" cy="130" r="16" fill="#00a8b5"/><circle cx="250" cy="255" r="34" fill="#0c1a30" stroke="#fff" stroke-width="14"/><circle cx="250" cy="255" r="16" fill="#00a8b5"/><circle cx="375" cy="380" r="34" fill="#0c1a30" stroke="#fff" stroke-width="14"/><circle cx="375" cy="380" r="16" fill="#00a8b5"/></svg></span>Routes</a>

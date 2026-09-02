@@ -1097,6 +1097,7 @@ void wsAcceptClients() {
   statsUnlock();
   if (slot < 0) {
     nc.print("HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    nc.flush();
     nc.stop();
     return;
   }

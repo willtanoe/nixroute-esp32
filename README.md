@@ -197,7 +197,3 @@ See `docs/research.md` (TLS dynamic buffer saves 20 KB), `docs/architecture.md` 
 ## License
 
 MIT — see `LICENSE`.
-
-## Feedback
-
-OpenCode on this repo is Muse Spark (model `opencode/muse-spark-1.2-contributor-free`, 2026-09-02). Issues: https://github.com/anomalyco/opencode.

@@ -1,7 +1,7 @@
 // ESP32-WROOM-32 AI API Router — Arduino (DOIT V1) — 9router-style Dashboard
 // Board: DOIT ESP32 DEVKIT V1, Flash 4MB, Upload 115200
 // Dashboard: http://<IP>/  (login default 123456, bisa ganti)
-// Mirip 9router: Endpoint + API Keys + Usage + Settings
+// Dynamic providers: add / remove / fetch-models / set (upsert), route by model prefix.
 
 #include <WiFi.h>
 #include <WebServer.h>
@@ -11,13 +11,16 @@
 #include <Preferences.h>
 #include <esp_random.h>
 
-const char* WIFI_SSID = "SuprimX";
-const char* WIFI_PASS = "wooting60he+";
-const char* DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions";
-const char* OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+#define MAX_PROVIDERS 8
+#define MAX_MODELS_CACHE 120
+
+struct Provider { String id, name, url, key; };
 
 Preferences prefs;
-String g_localToken, g_deepseekKey, g_openrouterKey, g_customUrl, g_customKey, g_adminPass;
+String g_wifiSsid, g_wifiPass, g_localToken, g_adminPass;
+Provider g_providers[MAX_PROVIDERS];
+int g_providerCount = 0;
+String g_providerModels[MAX_PROVIDERS]; // comma-separated cached model ids
 WebServer server(80);
 uint32_t reqTotal=0, reqOk=0, reqFail=0;
 unsigned long bootMs=0;
@@ -32,30 +35,156 @@ String genToken(int len=32){
   for(int i=0;i<len;i++) s+=cs[esp_random()%62];
   return "sk-local-"+s;
 }
-void loadConfig(){
-  prefs.begin("gateway", true);
-  g_localToken = prefs.getString("local_token","");
-  g_deepseekKey = prefs.getString("ds_key","");
-  g_openrouterKey = prefs.getString("or_key","");
-  g_customUrl = prefs.getString("custom_url","");
-  g_customKey = prefs.getString("custom_key","");
-  g_adminPass = prefs.getString("admin_pass","123456");
-  prefs.end();
+
+// ---- Provider helpers ----
+String apiRoot(const String& url){
+  String u=url;
+  if(u.endsWith("/chat/completions")) u=u.substring(0,u.length()-17);
+  while(u.length() && u.endsWith("/")) u=u.substring(0,u.length()-1);
+  if(!u.endsWith("/v1")) u+="/v1";
+  return u;
 }
-void saveKey(const char* k, const String& v){
-  prefs.begin("gateway", false);
-  prefs.putString(k, v);
+int findProvider(const String& id){
+  for(int i=0;i<g_providerCount;i++) if(g_providers[i].id==id) return i;
+  return -1;
+}
+void saveProviders(){
+  JsonDocument doc;
+  JsonArray arr=doc.to<JsonArray>();
+  for(int i=0;i<g_providerCount;i++){
+    JsonObject o=arr.add<JsonObject>();
+    o["id"]=g_providers[i].id; o["name"]=g_providers[i].name;
+    o["url"]=g_providers[i].url; o["key"]=g_providers[i].key;
+  }
+  String raw; serializeJson(doc,raw);
+  prefs.begin("gateway",false); prefs.putString("providers",raw); prefs.end();
+}
+void loadProviders(){
+  prefs.begin("gateway",true);
+  String raw=prefs.getString("providers","");
   prefs.end();
+  g_providerCount=0;
+  if(raw.length()){
+    JsonDocument doc;
+    if(!deserializeJson(doc,raw)){
+      JsonArray arr=doc.as<JsonArray>();
+      for(JsonVariant v:arr){
+        if(g_providerCount>=MAX_PROVIDERS) break;
+        JsonObject o=v.as<JsonObject>();
+        Provider& p=g_providers[g_providerCount++];
+        p.id=o["id"]|""; p.name=o["name"]|p.id.c_str(); p.url=o["url"]|""; p.key=o["key"]|"";
+      }
+    }
+  }
+  for(int i=0;i<g_providerCount;i++){
+    String k="models_"+g_providers[i].id;
+    prefs.begin("gateway",true);
+    g_providerModels[i]=prefs.getString(k.c_str(),"");
+    prefs.end();
+  }
+}
+// migrate legacy single-provider keys (ds_key/or_key/custom_*) on first boot
+void migrateLegacy(){
+  if(g_providerCount>0) return;
+  prefs.begin("gateway",true);
+  String ds=prefs.getString("ds_key",""), orK=prefs.getString("or_key","");
+  String cu=prefs.getString("custom_url",""), ck=prefs.getString("custom_key","");
+  prefs.end();
+  bool changed=false;
+  if(ds.length() && g_providerCount<MAX_PROVIDERS){
+    Provider& p=g_providers[g_providerCount++];
+    p.id="deepseek"; p.name="DeepSeek"; p.url="https://api.deepseek.com"; p.key=ds; changed=true;
+  }
+  if(orK.length() && g_providerCount<MAX_PROVIDERS){
+    Provider& p=g_providers[g_providerCount++];
+    p.id="openrouter"; p.name="OpenRouter"; p.url="https://openrouter.ai/api/v1"; p.key=orK; changed=true;
+  }
+  if(cu.length() && ck.length() && g_providerCount<MAX_PROVIDERS){
+    Provider& p=g_providers[g_providerCount++];
+    p.id="custom"; p.name="Custom"; p.url=cu; p.key=ck; changed=true;
+  }
+  if(changed) saveProviders();
+}
+int countModels(int idx){
+  String l=g_providerModels[idx]; if(!l.length()) return 0;
+  int n=1; for(unsigned i=0;i<l.length();i++) if(l[i]==',') n++;
+  return n;
+}
+String previewModels(int idx,int maxLen){
+  String l=g_providerModels[idx];
+  if(l.length()>(unsigned)maxLen) return l.substring(0,maxLen)+" …";
+  return l;
+}
+bool modelInProvider(int idx,const String& model){
+  String l=g_providerModels[idx];
+  int start=0;
+  while(start<(int)l.length()){
+    int comma=l.indexOf(',',start);
+    String m=(comma<0)?l.substring(start):l.substring(start,comma);
+    if(m==model) return true;
+    if(comma<0) break;
+    start=comma+1;
+  }
+  return false;
+}
+int routeProvider(const String& model){
+  // 1. prefix: "<id>-" or "<id>/"
+  for(int i=0;i<g_providerCount;i++){
+    String p=g_providers[i].id+"-", s=g_providers[i].id+"/";
+    if(model.startsWith(p)||model.startsWith(s)) return i;
+  }
+  // 2. exact match against cached models
+  for(int i=0;i<g_providerCount;i++) if(modelInProvider(i,model)) return i;
+  // 3. default: first provider with a key
+  for(int i=0;i<g_providerCount;i++) if(g_providers[i].key.length()) return i;
+  return g_providerCount?0:-1;
+}
+int fetchModels(int idx){
+  String root=apiRoot(g_providers[idx].url);
+  WiFiClientSecure client; client.setInsecure();
+  HTTPClient http; http.begin(client, root+"/models");
+  http.addHeader("Authorization","Bearer "+g_providers[idx].key);
+  http.setTimeout(15000);
+  int code=http.GET();
+  String body=http.getString();
+  http.end();
+  if(code<200||code>=300) return -1;
+  JsonDocument doc;
+  JsonDocument filter; filter["data"][0]["id"]=true;
+  DeserializationError err=deserializeJson(doc,body,DeserializationOption::Filter(filter));
+  if(err) return -2;
+  String ids=""; int count=0;
+  JsonArray data=doc["data"].as<JsonArray>();
+  for(JsonVariant v:data){
+    const char* id=v["id"];
+    if(id){
+      if(ids.length()) ids+=",";
+      ids+=id;
+      if(++count>=MAX_MODELS_CACHE) break;
+    }
+  }
+  g_providerModels[idx]=ids;
+  String k="models_"+g_providers[idx].id;
+  prefs.begin("gateway",false); prefs.putString(k.c_str(),ids); prefs.end();
+  return count;
+}
+
+void loadConfig(){
+  prefs.begin("gateway",true);
+  g_wifiSsid=prefs.getString("wifi_ssid","");
+  g_wifiPass=prefs.getString("wifi_pass","");
+  g_localToken=prefs.getString("local_token","");
+  g_adminPass=prefs.getString("admin_pass","123456");
+  prefs.end();
+  loadProviders();
+  migrateLegacy();
+}
+void saveKey(const char* k,const String& v){
+  prefs.begin("gateway",false); prefs.putString(k,v); prefs.end();
 }
 bool isAuthenticated(){
   if(!server.hasHeader("Cookie")) return false;
-  String c=server.header("Cookie");
-  return c.indexOf("esp_auth=ok")>=0;
-}
-bool isDashboardAuth(){
-  // dashboard + admin butuh login kalau sudah set password (default 123456)
-  // kalau belum login, redirect ke /login
-  return isAuthenticated();
+  return server.header("Cookie").indexOf("esp_auth=ok")>=0;
 }
 bool authCheck(){
   if(g_localToken.length()==0) return true;
@@ -66,7 +195,7 @@ bool authCheck(){
   volatile int d=0; for(unsigned i=0;i<h.length();i++) d|=h[i]^need[i];
   return d==0;
 }
-void sendJson(int code, const String& j){
+void sendJson(int code,const String& j){
   server.sendHeader("Access-Control-Allow-Origin","*");
   server.sendHeader("Cache-Control","no-store");
   server.send(code,"application/json",j);
@@ -77,15 +206,34 @@ void handleHealth(){
   String j=String("{\"status\":\"")+(conn?"ok":"wifi_disconnected")+"\",\"uptime_s\":"+(millis()/1000)
     +",\"wifi_connected\":"+(conn?"true":"false")+",\"ip\":\""+ip+"\",\"rssi\":"+WiFi.RSSI()
     +",\"free_heap\":"+ESP.getFreeHeap()+",\"requests_total\":"+reqTotal+",\"requests_ok\":"+reqOk+",\"requests_fail\":"+reqFail
-    +",\"local_token_set\":"+(g_localToken.length()?"true":"false")+"}";
+    +",\"local_token_set\":"+(g_localToken.length()?"true":"false")+",\"providers\":"+g_providerCount+"}";
   sendJson(200,j);
 }
 void handleModels(){
   if(!authCheck()){ sendJson(401,"{\"error\":{\"message\":\"unauthorized\"}}"); return; }
-  String m="{\"object\":\"list\",\"data\":[{\"id\":\"deepseek-chat\",\"object\":\"model\",\"owned_by\":\"deepseek\"},{\"id\":\"deepseek-reasoner\",\"object\":\"model\",\"owned_by\":\"deepseek\"},{\"id\":\"openrouter-auto\",\"object\":\"model\",\"owned_by\":\"openrouter\"}";
-  if(g_customUrl.length()) m+=",{\"id\":\"custom-model\",\"object\":\"model\",\"owned_by\":\"custom\"}";
-  m+="]}";
-  sendJson(200,m);
+  JsonDocument doc;
+  JsonObject root=doc.to<JsonObject>();
+  root["object"]="list";
+  JsonArray data=root["data"].to<JsonArray>();
+  for(int i=0;i<g_providerCount;i++){
+    String l=g_providerModels[i];
+    if(l.length()){
+      int start=0;
+      while(start<(int)l.length()){
+        int comma=l.indexOf(',',start);
+        String m=(comma<0)?l.substring(start):l.substring(start,comma);
+        JsonObject mo=data.add<JsonObject>();
+        mo["id"]=m; mo["object"]="model"; mo["owned_by"]=g_providers[i].id;
+        if(comma<0) break;
+        start=comma+1;
+      }
+    } else {
+      JsonObject mo=data.add<JsonObject>();
+      mo["id"]=g_providers[i].id+"-auto"; mo["object"]="model"; mo["owned_by"]=g_providers[i].id;
+    }
+  }
+  String out; serializeJson(doc,out);
+  sendJson(200,out);
 }
 void handleOptions(){
   server.sendHeader("Access-Control-Allow-Origin","*");
@@ -99,28 +247,21 @@ void handleChat(){
   String body=server.arg("plain");
   if(body.length()==0){ reqFail++; sendJson(400,"{\"error\":{\"message\":\"empty body\"}}"); return; }
   if(body.length()>8192){ reqFail++; sendJson(413,"{\"error\":{\"message\":\"payload too large\"}}"); return; }
-  String model="deepseek-chat";
+  String model="";
   int mi=body.indexOf("\"model\"");
   if(mi>=0){ int q1=body.indexOf("\"",mi+7); int q2=body.indexOf("\"",q1+1); if(q1>0&&q2>q1) model=body.substring(q1+1,q2); }
-  bool useCustom=(model.startsWith("custom-")||model.startsWith("bandel-")) && g_customUrl.length() && g_customKey.length();
-  bool useOR=!useCustom && (model.startsWith("openrouter-")||model.startsWith("claude-")||model.startsWith("gemini-"));
-  String apiKey, url;
-  if(useCustom){ apiKey=g_customKey; url=g_customUrl; if(!url.endsWith("/chat/completions")){ if(url.endsWith("/v1")) url+="/chat/completions"; else if(url.endsWith("/")) url+="v1/chat/completions"; else url+="/v1/chat/completions"; } }
-  else if(useOR){ apiKey=g_openrouterKey; url=OPENROUTER_URL; }
-  else { apiKey=g_deepseekKey; url=DEEPSEEK_URL; }
-  if(apiKey.length()==0){
-    if(!useCustom && g_deepseekKey.length()){ apiKey=g_deepseekKey; url=DEEPSEEK_URL; }
-    else if(!useCustom && g_openrouterKey.length()){ apiKey=g_openrouterKey; url=OPENROUTER_URL; }
-    else if(g_customUrl.length() && g_customKey.length()){ apiKey=g_customKey; url=g_customUrl; if(!url.endsWith("/chat/completions")) url+="/v1/chat/completions"; }
-    else { reqFail++; sendJson(500,"{\"error\":{\"message\":\"provider API key belum diisi — buka http://"+WiFi.localIP().toString()+"/\"}}"); return; }
-  }
+  int idx=routeProvider(model);
+  if(idx<0){ reqFail++; sendJson(500,"{\"error\":{\"message\":\"no provider configured — buka dashboard /dashboard/providers\"}}"); return; }
+  Provider& p=g_providers[idx];
+  if(p.key.length()==0){ reqFail++; sendJson(500,"{\"error\":{\"message\":\"provider \\\""+p.id+"\\\" has no API key — set it in dashboard\"}}"); return; }
+  String url=apiRoot(p.url)+"/chat/completions";
   bool isStream=body.indexOf("\"stream\":true")>=0 || body.indexOf("\"stream\": true")>=0;
   WiFiClientSecure *client=new WiFiClientSecure; client->setInsecure();
-  HTTPClient https; https.begin(*client, url);
+  HTTPClient https; https.begin(*client,url);
   https.addHeader("Content-Type","application/json");
-  https.addHeader("Authorization","Bearer "+apiKey);
-  https.addHeader("Accept", isStream?"text/event-stream":"application/json");
-  if(useOR){ https.addHeader("HTTP-Referer","http://"+WiFi.localIP().toString()); https.addHeader("X-Title","ESP32 Router"); }
+  https.addHeader("Authorization","Bearer "+p.key);
+  https.addHeader("Accept",isStream?"text/event-stream":"application/json");
+  if(p.id=="openrouter"){ https.addHeader("HTTP-Referer","http://"+WiFi.localIP().toString()); https.addHeader("X-Title","ESP32 Router"); }
   https.setTimeout(20000);
   int code=https.POST(body);
   String resp=https.getString();
@@ -128,13 +269,13 @@ void handleChat(){
   if(code>=200 && code<300){
     reqOk++;
     if(isStream){ server.sendHeader("Access-Control-Allow-Origin","*"); server.sendHeader("Cache-Control","no-cache"); server.send(200,"text/event-stream",resp); }
-    else sendJson(200, resp.length()?resp:"{}");
+    else sendJson(200,resp.length()?resp:"{}");
   } else {
     reqFail++;
-    if(resp.length() && resp[0]=='{') sendJson(code>0?code:502, resp);
-    else sendJson(code>0?code:502, String("{\"error\":{\"message\":\"upstream_error code ")+code+"\"}}");
+    if(resp.length() && resp[0]=='{') sendJson(code>0?code:502,resp);
+    else sendJson(code>0?code:502,String("{\"error\":{\"message\":\"upstream_error code ")+code+"\"}}");
   }
-  Serial.printf("chat model=%s code=%d heap=%d\n", model.c_str(), code, ESP.getFreeHeap());
+  Serial.printf("chat model=%s -> %s code=%d heap=%d\n",model.c_str(),p.id.c_str(),code,ESP.getFreeHeap());
 }
 void handleNotFound(){ sendJson(404,"{\"error\":{\"message\":\"not found\"}}"); }
 void handleFavicon(){ server.sendHeader("Cache-Control","max-age=86400"); server.send(200,"image/svg+xml",R"SVG(<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500"><rect x="70" y="70" width="92" height="375" rx="46" fill="#0c1a30"/><rect x="338" y="70" width="92" height="375" rx="46" fill="#0c1a30"/><line x1="125" y1="130" x2="375" y2="380" stroke="#0c1a30" stroke-width="96" stroke-linecap="round"/><line x1="125" y1="130" x2="375" y2="380" stroke="#fff" stroke-width="18" stroke-linecap="round"/><circle cx="125" cy="130" r="34" fill="#0c1a30" stroke="#fff" stroke-width="14"/><circle cx="125" cy="130" r="16" fill="#00a8b5"/><circle cx="250" cy="255" r="34" fill="#0c1a30" stroke="#fff" stroke-width="14"/><circle cx="250" cy="255" r="16" fill="#00a8b5"/><circle cx="375" cy="380" r="34" fill="#0c1a30" stroke="#fff" stroke-width="14"/><circle cx="375" cy="380" r="16" fill="#00a8b5"/></svg>)SVG"); }
@@ -153,7 +294,7 @@ label{font-size:12px;font-weight:600;color:var(--c-text);display:block;margin:12
 .input:focus{border-color:var(--c-primary);box-shadow:0 0 0 3px rgba(0,168,181,.18)}
 .btn{width:100%;padding:11px;border-radius:10px;border:0;background:var(--c-primary);color:#fff;font-weight:600;font-size:14px;cursor:pointer;margin-top:14px}
 .btn:hover{background:var(--c-primary-h)} .hint{font-size:11px;color:var(--c-muted);margin-top:12px;text-align:center} code{background:#f0f4f8;padding:1px 5px;border-radius:6px;font-size:11px}
-</style></head><body><div class=card><div class=logo><svg viewBox="0 0 500 500" width="36" height="36"><rect x="70" y="70" width="92" height="375" rx="46" fill="#0c1a30"/><rect x="338" y="70" width="92" height="375" rx="46" fill="#0c1a30"/><line x1="125" y1="130" x2="375" y2="380" stroke="#0c1a30" stroke-width="96" stroke-linecap="round"/><line x1="125" y1="130" x2="375" y2="380" stroke="#fff" stroke-width="18" stroke-linecap="round"/><circle cx="125" cy="130" r="34" fill="#0c1a30" stroke="#fff" stroke-width="14"/><circle cx="125" cy="130" r="16" fill="#00a8b5"/><circle cx="250" cy="255" r="34" fill="#0c1a30" stroke="#fff" stroke-width="14"/><circle cx="250" cy="255" r="16" fill="#00a8b5"/><circle cx="375" cy="380" r="34" fill="#0c1a30" stroke="#fff" stroke-width="14"/><circle cx="375" cy="380" r="16" fill="#00a8b5"/></svg><div><div style="font-weight:800;letter-spacing:.2px">NixRoute</div><div style="font-size:11px;color:var(--c-muted)">ESP32 · SuprimX</div></div></div><h1>Masuk Dashboard</h1><p class=sub>Password default <code>123456</code></p><form method=POST action=/admin/login><label>Password</label><input class=input name=password type=password placeholder="••••••" required autofocus><button class=btn>Masuk</button></form><p class=hint>Ganti password di Settings setelah login untuk keamanan</p></div></body></html>)HTML";
+</style></head><body><div class=card><div class=logo><svg viewBox="0 0 500 500" width="36" height="36"><rect x="70" y="70" width="92" height="375" rx="46" fill="#0c1a30"/><rect x="338" y="70" width="92" height="375" rx="46" fill="#0c1a30"/><line x1="125" y1="130" x2="375" y2="380" stroke="#0c1a30" stroke-width="96" stroke-linecap="round"/><line x1="125" y1="130" x2="375" y2="380" stroke="#fff" stroke-width="18" stroke-linecap="round"/><circle cx="125" cy="130" r="34" fill="#0c1a30" stroke="#fff" stroke-width="14"/><circle cx="125" cy="130" r="16" fill="#00a8b5"/><circle cx="250" cy="255" r="34" fill="#0c1a30" stroke="#fff" stroke-width="14"/><circle cx="250" cy="255" r="16" fill="#00a8b5"/><circle cx="375" cy="380" r="34" fill="#0c1a30" stroke="#fff" stroke-width="14"/><circle cx="375" cy="380" r="16" fill="#00a8b5"/></svg><div><div style="font-weight:800;letter-spacing:.2px">NixRoute</div><div style="font-size:11px;color:var(--c-muted)">ESP32 Router</div></div></div><h1>Masuk Dashboard</h1><p class=sub>Password default <code>123456</code></p><form method=POST action=/admin/login><label>Password</label><input class=input name=password type=password placeholder="••••••" required autofocus><button class=btn>Masuk</button></form><p class=hint>Ganti password di Settings setelah login untuk keamanan</p></div></body></html>)HTML";
   server.send(200,"text/html",html);
 }
 void handleLoginPost(){
@@ -181,11 +322,24 @@ void handleRoot(){
   }
   String ip=WiFi.localIP().toString();
   bool conn=WiFi.status()==WL_CONNECTED;
+  bool apMode=(WiFi.getMode()==WIFI_AP);
   String tokenMask=g_localToken.length()?maskKey(g_localToken):"(open)";
-  String dsMask=g_deepseekKey.length()?maskKey(g_deepseekKey):"kosong";
-  String orMask=g_openrouterKey.length()?maskKey(g_openrouterKey):"kosong";
-  String cuMask=g_customUrl.length()?(g_customUrl+" <code>"+maskKey(g_customKey)+"</code>"):"kosong";
-  String html = String(R"HTML(<!doctype html><html><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>NixRoute ESP32 v1.0.0</title><link rel="icon" href="/favicon.svg"><style>
+
+  String providersHtml="";
+  for(int i=0;i<g_providerCount;i++){
+    Provider& p=g_providers[i];
+    int mc=countModels(i);
+    providersHtml+="<div class=card style='margin:0'>";
+    providersHtml+="<div class=row><span class=badge>"+p.name+"</span><div class=mono>"+p.url+"</div><span class=small>key "+(p.key.length()?maskKey(p.key):"kosong")+"</span></div>";
+    providersHtml+="<div class=row><span class=small>id <code>"+p.id+"</code> · "+String(mc)+" models</span>";
+    providersHtml+="<form method=POST action=/admin/providers/fetch style='display:inline'><input type=hidden name=id value='"+p.id+"'><button class='btn ghost'>Fetch Models</button></form>";
+    providersHtml+="<form method=POST action=/admin/providers/remove style='display:inline' onsubmit=\"return confirm('Hapus provider "+p.id+"?')\"><input type=hidden name=id value='"+p.id+"'><button class='btn ghost'>Remove</button></form></div>";
+    if(mc) providersHtml+="<div class=small style='word-break:break-all'>"+previewModels(i,200)+"</div>";
+    else providersHtml+="<div class=small>belum fetch models — routing pakai prefix <code>"+p.id+"-*</code></div>";
+    providersHtml+="</div>";
+  }
+
+  String html = String(R"HTML(<!doctype html><html><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>NixRoute ESP32 v1.1.0</title><link rel="icon" href="/favicon.svg"><style>
 *{scroll-behavior:smooth}
 *{box-sizing:border-box}body{margin:0;font-family:"IBM Plex Sans",system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--c-bg);color:var(--c-text)}
 :root{--c-bg:#f5f8fc;--c-surface:#ffffff;--c-surface-2:#f0f4f8;--c-border:#c7d3e0;--c-border-sub:#dde6ef;--c-text:#0c1a30;--c-muted:#52657d;--c-subtle:#7d8da2;--c-primary:#00a8b5;--c-primary-h:#008b97;--c-data-soft:#e8fbfc;--r:8px;--r-lg:12px;--sh:0 1px 2px rgba(12,26,48,.06);--sh-el:0 8px 24px rgba(12,26,48,.12)}
@@ -228,41 +382,41 @@ void handleRoot(){
 <a href="/dashboard/settings" data-page="settings" onclick="nav('settings');return false"><span>⚙️</span>Settings</a>
 <div style="flex:1"></div>
 <a href="/admin/logout" style="color:#888;font-size:10px">Logout</a>
-</aside><div class=main><div class=header><div class=logo>NixRoute ESP32 <span style="font-weight:400;color:#666">— SuprimX · nixroute 1.0.0</span></div><div style="display:flex;align-items:center;gap:10px"><div style="font-size:12px;color:#666">)HTML") + ip + R"HTML(</div><button class=tbtn onclick="toggleTheme()" title="Dark mode">🌓</button></div></div><div class=wrap>)HTML"
+</aside><div class=main><div class=header><div class=logo>NixRoute ESP32 <span style="font-weight:400;color:#666">— nixroute 1.1.0</span></div><div style="display:flex;align-items:center;gap:10px"><div style="font-size:12px;color:#666">)HTML") + ip + R"HTML(</div><button class=tbtn onclick="toggleTheme()" title="Dark mode">🌓</button></div></div><div class=wrap>)HTML"
   + "<section class=\"page\" id=\"page-endpoint\"><div class=card><h2>◉ API Endpoint — Routes</h2>"
   + "<div class=row><span class='badge on'>Local</span><div class=mono>http://"+ip+"/v1</div><button class='btn ghost' onclick=\"copyEndpoint('http://"+ip+"/v1')\">Copy</button></div>"
-  + "<div class=row><span class=badge>WiFi</span><div class=mono>"+(conn?ip+" · RSSI "+WiFi.RSSI()+"dBm":"disconnected")+"</div><span class='small "+(conn?"ok":"warn")+"'>"+(conn?"connected":"disconnected")+"</span></div>"
-  + "<div class=kv><div><b>Uptime</b> "+(millis()/1000)+"s</div><div><b>Heap</b> "+ESP.getFreeHeap()+"</div><div><b>Requests</b> "+reqTotal+" ("+reqOk+" ok / "+reqFail+" fail)</div><div><b>IP</b> "+ip+"</div></div></div></section>"
+  + "<div class=row><span class=badge>WiFi</span><div class=mono>"+(apMode?("AP mode · "+ip):(conn?ip+" · RSSI "+WiFi.RSSI()+"dBm":"disconnected"))+"</div><span class='small "+(conn||apMode?"ok":"warn")+"'>"+(apMode?"setup AP":(conn?"connected":"disconnected"))+"</span></div>"
+  + "<div class=kv><div><b>Uptime</b> "+(millis()/1000)+"s</div><div><b>Heap</b> "+ESP.getFreeHeap()+"</div><div><b>Requests</b> "+reqTotal+" ("+reqOk+" ok / "+reqFail+" fail)</div><div><b>Providers</b> "+g_providerCount+"</div></div></div></section>"
 
   + "<section class=\"page\" id=\"page-providers\"><div class=card><h2>🔑 API Keys — Require API key: "+String(g_localToken.length()?"ON":"OFF")+"</h2>"
   + "<div class=row><span class=badge>Local Token</span><div class=mono>"+tokenMask+"</div><form method=POST action=/admin/token/generate style='display:inline'><button class=btn>Generate</button></form><form method=POST action=/admin/token/clear style='display:inline'><button class='btn ghost'>Clear</button></form></div>"
   + (g_localToken.length()?"<div class=mono style='font-size:11px;word-break:break-all'>"+g_localToken+"</div>":"<div class=small>Open — client tidak perlu Authorization</div>")
-  + "<div class=small style='margin:8px 0'>Client: <code>Authorization: Bearer TOKEN</code> atau <code>OPENAI_API_KEY=TOKEN</code> + <code>OPENAI_BASE_URL=http://"+ip+"/v1</code> — <code>curl -H \"Authorization: Bearer "+(g_localToken.length()?g_localToken:"TOKEN")+"\" http://"+ip+"/v1/models</code></div>"
   + "</div>"
 
   + "<div class=card><h2>🔌 Providers</h2>"
-  + "<div class=row><span class=badge>DeepSeek</span><div class=mono>"+dsMask+"</div></div>"
-  + "<div class=row><span class=badge>OpenRouter</span><div class=mono>"+orMask+"</div></div>"
-  + "<div class=row><span class=badge>Custom</span><div class=mono style='font-size:12px'>"+cuMask+"</div></div>"
-  + "<form method=POST action=/admin/keys>"
-  + "<input class=input name=ds_key placeholder='DeepSeek sk-...'>"
-  + "<input class=input name=or_key placeholder='OpenRouter sk-or-...'>"
-  + "<input class=input name=custom_url placeholder='Custom https://bandelbanget.xyz/v1'>"
-  + "<input class=input name=custom_key placeholder='Custom sk-...'>"
-  + "<button class=btn>Simpan Keys</button> <span class=small>pakai model <code>custom-*</code> / <code>bandel-*</code> untuk custom</span>"
+  + providersHtml
+  + "<form method=POST action=/admin/providers/add>"
+  + "<input class=input name=id placeholder='id slug (mis. deepseek)'>"
+  + "<input class=input name=name placeholder='Nama (mis. DeepSeek)'>"
+  + "<input class=input name=url placeholder='Base URL (mis. https://api.deepseek.com)'>"
+  + "<input class=input name=key placeholder='API Key sk-...'>"
+  + "<button class=btn>Add / Update Provider</button> <span class=small>id yang sudah ada akan di-update (set)</span>"
   + "</form></div></section>"
 
-  + "<section class=\"page\" id=\"page-policies\"><div class=card><h2>🧩 Policies — Routing</h2><div class=small><code>deepseek-*</code> → DeepSeek &nbsp; <code>openrouter-*/claude-*/gemini-*</code> → OpenRouter &nbsp; <code>custom-*/bandel-*</code> → Custom ("+ (g_customUrl.length()?g_customUrl:"(custom kosong)") +")</div><div class=small>Fallback: DeepSeek → OpenRouter → Custom (sebelum byte pertama)</div></div></section>"
+  + "<section class=\"page\" id=\"page-policies\"><div class=card><h2>🧩 Policies — Routing</h2><div class=small>Routing model → provider: (1) prefix <code>&lt;id&gt;-*</code> / <code>&lt;id&gt;/*</code>, (2) exact match hasil fetch models, (3) fallback provider pertama yang punya key.</div><div class=small>Contoh: model <code>deepseek-chat</code> → provider <code>deepseek</code>; <code>openrouter-auto</code> → <code>openrouter</code>.</div></div></section>"
 
   + "<section class=\"page\" id=\"page-usage\"><div class=card><h2>📊 Observe — Usage</h2><div class=kv><div><b>Total</b> "+reqTotal+"</div><div><b>OK</b> "+reqOk+"</div><div><b>Fail</b> "+reqFail+"</div><div><b>Heap</b> "+ESP.getFreeHeap()+"</div></div><div class=small>GET <code>/health</code> · <code>/admin/status</code> untuk JSON</div></div></section>"
 
   + "<section class=\"page\" id=\"page-tools\"><div class=card><h2>🔧 Tools</h2><div class=small><code>curl http://"+ip+"/health</code> · <code>curl -H \"Authorization: Bearer TOKEN\" http://"+ip+"/v1/models</code> · <code>POST /v1/chat/completions</code></div><div class=small>OpenAI SDK: <code>OPENAI_BASE_URL=http://"+ip+"/v1</code></div></div></section>"
 
-  + "<section class=\"page\" id=\"page-settings\"><div class=card><h2>🛡 Settings</h2>"
-  + "<form method=POST action=/admin/password><div class=row><input class=input name=new_pass placeholder='Ganti password dashboard (default 123456)'><button class=btn>Update Password</button></div></form>"
-  + "<div class=small>GET <code>/health</code> · <code>GET /v1/models</code> · <code>POST /v1/chat/completions</code> · <code>GET /admin/status</code></div>"
+  + "<section class=\"page\" id=\"page-settings\"><div class=card><h2>📶 Wi-Fi</h2>"
+  + "<div class=small>"+(apMode?"Mode AP aktif — set SSID/password lalu Save untuk reconnect ke Wi-Fi rumah.":"SSID: <code>"+g_wifiSsid+"</code>")+"</div>"
+  + "<form method=POST action=/admin/wifi><div class=row><input class=input name=ssid placeholder='WiFi SSID' value='"+g_wifiSsid+"'><input class=input name=pass placeholder='WiFi Password'><button class=btn>Save & Reconnect</button></div></form>"
   + "</div>"
-  + "<div class=card><h2>ℹ️ About</h2><div class=kv><div><b>Version</b> nixroute 1.0.0</div><div><b>IP</b> "+ip+"</div><div><b>Uptime</b> "+(millis()/1000)+"s</div><div><b>Heap</b> "+ESP.getFreeHeap()+"</div></div></div></section>"
+  + "<div class=card><h2>🛡 Settings</h2>"
+  + "<form method=POST action=/admin/password><div class=row><input class=input name=new_pass placeholder='Ganti password dashboard (default 123456)'><button class=btn>Update Password</button></div></form>"
+  + "</div>"
+  + "<div class=card><h2>ℹ️ About</h2><div class=kv><div><b>Version</b> nixroute 1.1.0</div><div><b>IP</b> "+ip+"</div><div><b>Uptime</b> "+(millis()/1000)+"s</div><div><b>Heap</b> "+ESP.getFreeHeap()+"</div></div></div></section>"
 
   + "<script>"
   + "function getPage(){var p=location.pathname.split('/').pop();if(!p||p==='dashboard'||p==='endpoint')return 'endpoint';return p;}"
@@ -278,33 +432,88 @@ void handleRoot(){
   server.sendHeader("Cache-Control","no-store");
   server.send(200,"text/html",html);
 }
-void handleKeysPost(){
-  String ds=server.arg("ds_key"), orK=server.arg("or_key"), cu=server.arg("custom_url"), ck=server.arg("custom_key");
-  if(ds.length()){ saveKey("ds_key", ds); g_deepseekKey=ds; }
-  if(orK.length()){ saveKey("or_key", orK); g_openrouterKey=orK; }
-  if(cu.length()){ if(cu.endsWith("/")) cu=cu.substring(0,cu.length()-1); saveKey("custom_url", cu); g_customUrl=cu; }
-  if(ck.length()){ saveKey("custom_key", ck); g_customKey=ck; }
-  server.sendHeader("Location","/"); server.send(303,"","");
+
+// ---- Admin: providers ----
+void handleProviderAdd(){
+  if(!isAuthenticated()){ server.send(401,"text/plain","unauthorized"); return; }
+  String id=server.arg("id"), name=server.arg("name"), url=server.arg("url"), key=server.arg("key");
+  id.trim(); name.trim(); url.trim(); key.trim();
+  if(id.length() && url.length()){
+    int idx=findProvider(id);
+    if(idx<0){
+      if(g_providerCount>=MAX_PROVIDERS){ server.sendHeader("Location","/dashboard/providers"); server.send(303,"",""); return; }
+      idx=g_providerCount++;
+      g_providers[idx].id=id;
+    }
+    if(name.length()) g_providers[idx].name=name;
+    g_providers[idx].url=url;
+    if(key.length()) g_providers[idx].key=key;
+    saveProviders();
+  }
+  server.sendHeader("Location","/dashboard/providers"); server.send(303,"","");
 }
-void handleTokenGen(){ String t=genToken(32); saveKey("local_token",t); g_localToken=t; server.sendHeader("Location","/"); server.send(303,"",""); }
-void handleTokenClear(){ saveKey("local_token",""); g_localToken=""; server.sendHeader("Location","/"); server.send(303,"",""); }
+void handleProviderRemove(){
+  if(!isAuthenticated()){ server.send(401,"text/plain","unauthorized"); return; }
+  String id=server.arg("id");
+  int idx=findProvider(id);
+  if(idx>=0){
+    for(int i=idx;i<g_providerCount-1;i++) g_providers[i]=g_providers[i+1];
+    g_providerCount--;
+    saveProviders();
+    prefs.begin("gateway",false); prefs.remove(("models_"+id).c_str()); prefs.end();
+  }
+  server.sendHeader("Location","/dashboard/providers"); server.send(303,"","");
+}
+void handleProviderFetch(){
+  if(!isAuthenticated()){ server.send(401,"text/plain","unauthorized"); return; }
+  String id=server.arg("id");
+  int idx=findProvider(id);
+  if(idx>=0){ int n=fetchModels(idx); Serial.printf("fetch models %s -> %d\n",id.c_str(),n); }
+  server.sendHeader("Location","/dashboard/providers"); server.send(303,"","");
+}
+void handleTokenGen(){ String t=genToken(32); saveKey("local_token",t); g_localToken=t; server.sendHeader("Location","/dashboard/providers"); server.send(303,"",""); }
+void handleTokenClear(){ saveKey("local_token",""); g_localToken=""; server.sendHeader("Location","/dashboard/providers"); server.send(303,"",""); }
 void handlePasswordPost(){
   if(!isAuthenticated()){ server.send(401,"text/plain","unauthorized"); return; }
   String np=server.arg("new_pass");
-  if(np.length()>=3){ saveKey("admin_pass", np); g_adminPass=np; }
-  server.sendHeader("Location","/"); server.send(303,"","");
+  if(np.length()>=3){ saveKey("admin_pass",np); g_adminPass=np; }
+  server.sendHeader("Location","/dashboard/settings"); server.send(303,"","");
+}
+void handleWifiPost(){
+  if(!isAuthenticated()){ server.send(401,"text/plain","unauthorized"); return; }
+  String ssid=server.arg("ssid"), pass=server.arg("pass");
+  if(ssid.length()){
+    prefs.begin("gateway",false);
+    prefs.putString("wifi_ssid",ssid);
+    prefs.putString("wifi_pass",pass);
+    prefs.end();
+    g_wifiSsid=ssid; g_wifiPass=pass;
+    server.sendHeader("Location","/dashboard/settings");
+    server.send(303,"","");
+    delay(200);
+    ESP.restart();
+    return;
+  }
+  server.sendHeader("Location","/dashboard/settings"); server.send(303,"","");
 }
 
 void setup(){
   Serial.begin(115200); delay(300);
-  Serial.println("\n=== NixRoute ESP32 v1.0.0 ===");
+  Serial.println("\n=== NixRoute ESP32 v1.1.0 ===");
   loadConfig();
-  Serial.printf("admin %s local %s ds %s or %s custom %s\n", g_adminPass.c_str(), g_localToken.length()?"set":"open", g_deepseekKey.length()?"set":"-", g_openrouterKey.length()?"set":"-", g_customUrl.c_str());
-  WiFi.mode(WIFI_STA); WiFi.begin(WIFI_SSID, WIFI_PASS);
-  Serial.print("Connecting WiFi");
-  int t=0; while(WiFi.status()!=WL_CONNECTED && t<30){ delay(500); Serial.print("."); t++; }
-  if(WiFi.status()==WL_CONNECTED) Serial.printf("\nWiFi OK IP %s RSSI %d heap %d\n", WiFi.localIP().toString().c_str(), WiFi.RSSI(), ESP.getFreeHeap());
-  else Serial.printf("\nWiFi FAIL %d\n", WiFi.status());
+  Serial.printf("admin %s local %s wifi %s providers %d\n", g_adminPass.c_str(), g_localToken.length()?"set":"open", g_wifiSsid.length()?g_wifiSsid.c_str():"(none)", g_providerCount);
+
+  if(g_wifiSsid.length()){
+    WiFi.mode(WIFI_STA); WiFi.begin(g_wifiSsid.c_str(), g_wifiPass.c_str());
+    Serial.print("Connecting WiFi");
+    int t=0; while(WiFi.status()!=WL_CONNECTED && t<30){ delay(500); Serial.print("."); t++; }
+    if(WiFi.status()==WL_CONNECTED) Serial.printf("\nWiFi OK IP %s RSSI %d heap %d\n", WiFi.localIP().toString().c_str(), WiFi.RSSI(), ESP.getFreeHeap());
+    else Serial.printf("\nWiFi FAIL %d\n", WiFi.status());
+  } else {
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP("NixRoute-Setup","12345678");
+    Serial.printf("No WiFi configured — AP mode 'NixRoute-Setup' (pw 12345678) IP %s\n", WiFi.softAPIP().toString().c_str());
+  }
 
   server.on("/favicon.svg", HTTP_GET, handleFavicon);
   server.on("/nixroute.svg", HTTP_GET, handleNixrouteSvg);
@@ -323,10 +532,13 @@ void setup(){
   server.on("/v1/models", HTTP_GET, handleModels);
   server.on("/admin/status", HTTP_GET, handleHealth);
   server.on("/v1/chat/completions", HTTP_POST, handleChat);
-  server.on("/admin/keys", HTTP_POST, handleKeysPost);
+  server.on("/admin/providers/add", HTTP_POST, handleProviderAdd);
+  server.on("/admin/providers/remove", HTTP_POST, handleProviderRemove);
+  server.on("/admin/providers/fetch", HTTP_POST, handleProviderFetch);
   server.on("/admin/token/generate", HTTP_POST, handleTokenGen);
   server.on("/admin/token/clear", HTTP_POST, handleTokenClear);
   server.on("/admin/password", HTTP_POST, handlePasswordPost);
+  server.on("/admin/wifi", HTTP_POST, handleWifiPost);
   server.on("/v1/chat/completions", HTTP_OPTIONS, handleOptions);
   server.on("/health", HTTP_OPTIONS, handleOptions);
   server.on("/v1/models", HTTP_OPTIONS, handleOptions);

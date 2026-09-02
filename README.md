@@ -10,9 +10,7 @@ curl / Python OpenAI SDK / Claude Code / OpenCode
         ▼
    ESP32-WROOM-32  —  Arduino WebServer + WiFiClientSecure (mbedTLS)
         │                serialized TLS (1 upstream at a time)
-        ├─► deepseek   (https://api.deepseek.com/v1/chat/completions)
-        ├─► openrouter (https://openrouter.ai/api/v1/chat/completions)
-        └─► custom     (any OpenAI-compatible base URL)
+        └─► N dynamic OpenAI-compatible providers (add/remove/fetch-models)
 ```
 
 ---
@@ -20,16 +18,13 @@ curl / Python OpenAI SDK / Claude Code / OpenCode
 ## Features
 
 - **OpenAI-compatible** `POST /v1/chat/completions` — forwards JSON verbatim, extracts `model` + `stream` (8 KB body cap → 413)
-- **Provider routing** by model prefix:
-  - `deepseek-*` → DeepSeek
-  - `openrouter-*` / `claude-*` / `gemini-*` → OpenRouter
-  - `custom-*` / `bandel-*` → Custom base URL
-  - Fallback order: DeepSeek → OpenRouter → Custom
+- **Dynamic provider manager** (like 9router): add / remove / fetch-models / set providers; model → provider routing by prefix → fetched-model match → fallback
 - **Streaming** `stream:true` → `text/event-stream` (SSE) passthrough
 - **SPA dashboard** at `http://<ip>/` — login (default `123456`), rail navigation, dark mode, back/forward + direct-URL routing
-- **Persistence** via `Preferences` (NVS namespace `gateway`): provider keys, local token, admin password
+- **Persistence** via `Preferences` (NVS namespace `gateway`): providers, cached models, Wi-Fi, local token, admin password
+- **No hardcoded secrets** — Wi-Fi + keys live in NVS, configured from the dashboard; AP fallback (`NixRoute-Setup`) on first boot
 - **Optional auth** — `LOCAL_API_TOKEN` Bearer (constant-time compare) when set; empty = open
-- **Observability** — `GET /health` (uptime, heap, RSSI, request counters)
+- **Observability** — `GET /health` (uptime, heap, RSSI, request counters, provider count)
 
 ---
 
@@ -56,11 +51,11 @@ arduino-cli upload  --fqbn esp32:esp32:esp32 --port COM11 firmware_arduino/esp32
 arduino-cli monitor --port COM11 --config baudrate=115200
 ```
 
-Measured: ~81% flash / ~14% RAM (ESP32 core 3.3.11).
+Measured: ~83% flash / ~15% RAM (ESP32 core 3.3.11).
 
 ### Wi-Fi
 
-SSID/password are hardcoded at the top of `esp32_router.ino` (`WIFI_SSID`, `WIFI_PASS`). Edit before flashing.
+SSID/password are stored in NVS (`wifi_ssid` / `wifi_pass`), set from **Settings → Wi-Fi** in the dashboard — never hardcoded. On first boot with no Wi-Fi configured, the device starts an access point `NixRoute-Setup` (password `12345678`, IP `192.168.4.1`) so you can reach the dashboard and set your Wi-Fi.
 
 ---
 
@@ -69,11 +64,20 @@ SSID/password are hardcoded at the top of `esp32_router.ino` (`WIFI_SSID`, `WIFI
 | Page | Route | Purpose |
 |---|---|---|
 | Routes | `/dashboard/endpoint` | Local endpoint, Wi-Fi status, uptime, request counters |
-| Providers | `/dashboard/providers` | API keys (local token, DeepSeek, OpenRouter, Custom) |
-| Policies | `/dashboard/policies` | Routing rules + fallback order |
+| Providers | `/dashboard/providers` | Add / remove / fetch-models / set providers + local token |
+| Policies | `/dashboard/policies` | Model → provider routing rules |
 | Observe | `/dashboard/usage` | Usage counters + heap |
 | Tools | `/dashboard/tools` | curl / OpenAI SDK snippets |
-| Settings | `/dashboard/settings` | Change admin password + About |
+| Settings | `/dashboard/settings` | Wi-Fi, admin password, About |
+
+### Providers
+
+Providers are OpenAI-compatible endpoints stored in NVS as a JSON array. From the dashboard you can **add**, **remove**, **fetch models** (calls each provider's `GET /models`, cached in NVS), and **set/update** (re-submitting an existing `id` updates it).
+
+Model → provider routing (like 9router):
+1. prefix match — `model` starting with `<id>-` or `<id>/`
+2. exact match against the provider's fetched model list
+3. fallback — first provider that has an API key
 
 Auth: `POST /admin/login` sets `esp_auth=ok` cookie (24 h). `GET /admin/logout` clears it.
 
@@ -83,14 +87,17 @@ Auth: `POST /admin/login` sets `esp_auth=ok` cookie (24 h). `GET /admin/logout` 
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `GET` | `/health` | none | `{status, uptime_s, wifi_connected, ip, rssi, free_heap, requests_total, requests_ok, requests_fail, local_token_set}` |
-| `GET` | `/v1/models` | Bearer if token set | OpenAI `list` shape (deepseek-chat, deepseek-reasoner, openrouter-auto, custom-model) |
+| `GET` | `/health` | none | `{status, uptime_s, wifi_connected, ip, rssi, free_heap, requests_total, requests_ok, requests_fail, local_token_set, providers}` |
+| `GET` | `/v1/models` | Bearer if token set | OpenAI `list` shape, aggregated from each provider's fetched models |
 | `POST` | `/v1/chat/completions` | Bearer if token set | Proxy; `model`+`stream` extracted; `413` if body > 8 KB |
 | `GET` | `/admin/status` | — | alias for `/health` |
 | `GET` | `/admin/login` / `POST` | — | dashboard login |
-| `POST` | `/admin/keys` | cookie | save provider keys |
+| `POST` | `/admin/providers/add` | cookie | add or update (set) a provider |
+| `POST` | `/admin/providers/remove` | cookie | remove a provider (and its model cache) |
+| `POST` | `/admin/providers/fetch` | cookie | fetch + cache a provider's models |
 | `POST` | `/admin/token/generate` / `clear` | cookie | rotate local token |
 | `POST` | `/admin/password` | cookie | change admin password |
+| `POST` | `/admin/wifi` | cookie | set Wi-Fi SSID/password + reboot |
 | `OPTIONS` | `/*` | — | CORS preflight `204` |
 
 Responses include `Access-Control-Allow-Origin:*` and `Cache-Control:no-store`. Errors are OpenAI-shaped `{"error":{"message":...}}`.

@@ -691,12 +691,15 @@ String readBodyManual(WiFiClientSecure& client, bool chunked, size_t contentLeng
       remaining -= r;
     }
   } else {
+    unsigned long startT = millis();
     while (client.connected() || client.available()) {
       if (client.available()) {
         int r = client.read(buf, sizeof(buf));
         if (r <= 0) break;
         body.concat((const char*)buf, (unsigned)r);
+        startT = millis();
       } else {
+        if (millis() - startT > 5000) break;
         delay(1);
       }
     }
@@ -716,6 +719,7 @@ void streamResponseManual(WiFiClientSecure& client, bool chunked, size_t content
   String tail;
   tail.reserve(2048);
   size_t remaining = contentLength;
+  unsigned long startT = millis();
   while (true) {
     size_t want;
     if (chunked) {
@@ -723,16 +727,22 @@ void streamResponseManual(WiFiClientSecure& client, bool chunked, size_t content
       if (sz == 0) { client.readStringUntil('\n'); break; }
       remaining = sz;
       want = remaining > sizeof(buf) ? sizeof(buf) : remaining;
+      startT = millis();
     } else if (contentLength > 0) {
       if (remaining == 0) break;
       want = remaining > sizeof(buf) ? sizeof(buf) : remaining;
     } else {
       size_t avail = client.available();
-      if (!avail) { if (!client.connected()) break; delay(1); continue; }
+      if (!avail) { 
+        if (!client.connected() || millis() - startT > 5000) break; 
+        delay(1); 
+        continue; 
+      }
       want = avail > sizeof(buf) ? sizeof(buf) : avail;
     }
     int r = client.read(buf, want);
     if (r <= 0) break;
+    startT = millis();
     c.printf("%x\r\n", (unsigned)r);
     c.write(buf, r);
     c.print("\r\n");
@@ -754,7 +764,7 @@ void streamResponseManual(WiFiClientSecure& client, bool chunked, size_t content
 // ---------------------------------------------------------------------------
 // Proxy engine (runs on Core 1)
 // ---------------------------------------------------------------------------
-int doUpstream(const ProviderSnap& p, bool isStream, volatile bool* bodyDone, size_t reqContentLength,
+int doUpstream(const ProviderSnap& p, bool isStream, volatile bool* bodyDone,
                NetworkClient& c, const String& fullModel, uint32_t& outTokens) {
   outTokens = 0;
   String host;
@@ -771,7 +781,7 @@ int doUpstream(const ProviderSnap& p, bool isStream, volatile bool* bodyDone, si
     return 0;
   }
 
-  // request headers (exact Content-Length)
+  // request headers (chunked upload)
   client.printf("POST %s HTTP/1.1\r\n", path.c_str());
   client.printf("Host: %s\r\n", host.c_str());
   client.print("Content-Type: application/json\r\n");
@@ -785,24 +795,22 @@ int doUpstream(const ProviderSnap& p, bool isStream, volatile bool* bodyDone, si
     client.print("HTTP-Referer: http://" + WiFi.localIP().toString() + "\r\n");
     client.print("X-Title: NixRoute\r\n");
   }
-  client.printf("Content-Length: %d\r\n", reqContentLength);
+  client.print("Transfer-Encoding: chunked\r\n");
   client.print("Connection: close\r\n\r\n");
 
-  // stream the request body directly
+  // stream the request body directly using chunked encoding
   uint8_t buf[1024];
-  size_t remaining = reqContentLength;
-  while (remaining > 0) {
-    size_t want = remaining > sizeof(buf) ? sizeof(buf) : remaining;
-    size_t r = xStreamBufferReceive(g_bodyStream, buf, want, pdMS_TO_TICKS(200));
+  while (true) {
+    size_t r = xStreamBufferReceive(g_bodyStream, buf, sizeof(buf), pdMS_TO_TICKS(200));
     if (r > 0) {
+      client.printf("%x\r\n", (unsigned)r);
       client.write(buf, r);
-      remaining -= r;
+      client.print("\r\n");
     } else if (bodyDone && *bodyDone) {
-      // client body finished but we didn't receive enough bytes? Wait, the length must match.
-      // If we break early, we might send an incomplete request.
       break;
     }
   }
+  client.print("0\r\n\r\n");
 
   // read response
   bool chunked;
@@ -843,7 +851,7 @@ void processProxyJob(ProxyJob* job) {
   for (int k = 0; k < job->n; k++) {
     const ProviderSnap& p = job->providers[(start + k) % job->n];
     String fullModel = p.id + "/" + job->upstreamModel;
-    int code = doUpstream(p, job->isStream, &job->bodyDone, job->contentLength, c, fullModel, tokens);
+    int code = doUpstream(p, job->isStream, &job->bodyDone, c, fullModel, tokens);
     lastCode = code;
     if (code >= 200 && code < 300) { ok = true; break; }
     // Only fail over when the connection failed before the body was consumed

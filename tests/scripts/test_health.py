@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test script for ESP32 AI Router — Phase 3+
+Test script for NixRoute ESP32 API Gateway.
 Usage: python test_health.py --host 192.168.1.50 --port 80
 """
 import argparse

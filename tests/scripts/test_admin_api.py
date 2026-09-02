@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Admin API smoke test for ESP32 Router.
+Admin API smoke test for NixRoute.
 
 Usage:
   python test_admin_api.py --host 192.168.1.50 --password 123456

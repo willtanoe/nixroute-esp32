@@ -21,7 +21,7 @@ def test_chat(args):
     url = f"http://{args.host}:{args.port}/v1/chat/completions"
     payload = {
         "model": args.model,
-        "messages": [{"role": "user", "content": "Hello via ESP32 router"}],
+        "messages": [{"role": "user", "content": "Hello via NixRoute"}],
         "stream": args.stream
     }
     headers = {"Content-Type": "application/json"}

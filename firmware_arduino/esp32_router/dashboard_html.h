@@ -1,4 +1,4 @@
-// ESP32 Router — Dashboard SPA (modern dark mode, zero external dependency)
+// NixRoute — Dashboard SPA (modern dark mode, zero external dependency)
 // Stored in flash via PROGMEM. Served by esp32_router.ino at "/".
 #pragma once
 #include <pgmspace.h>
@@ -8,7 +8,7 @@ const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ESP32 Router</title>
+<title>NixRoute</title>
 <style>
 :root{
   --bg:#0f172a; --surface:#1e293b; --surface-2:#273449; --surface-3:#1a2438;
@@ -166,7 +166,7 @@ td.ok{color:var(--ok)} td.danger{color:var(--danger)}
 
 <header>
   <div class="hbar">
-    <div class="brand"><div class="mark">R</div><div>ESP32 Router<span class="sub"><br>AI API Gateway</span></div></div>
+    <div class="brand"><div class="mark">N</div><div>NixRoute<span class="sub"><br>ESP32 API Gateway</span></div></div>
     <div class="grow"></div>
     <span class="pill off" id="wifi-pill"><span class="dot"></span>—</span>
     <div class="ipbox">IP <b id="hdr-ip">—</b></div>

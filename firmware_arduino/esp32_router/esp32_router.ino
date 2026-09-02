@@ -1,4 +1,4 @@
-// ESP32 Router — AI API Gateway ("9Router") for DOIT ESP32 DEVKIT V1
+// NixRoute — ESP32 API Gateway for DOIT ESP32 DEVKIT V1
 // OpenAI-compatible gateway with smart failover, round-robin multi-provider
 // routing, per-provider metrics, and token usage tracking.
 //
@@ -569,7 +569,7 @@ int attemptRequest(int idx, const String& body, const String& upstreamModel, boo
   http.addHeader("Accept", isStream ? "text/event-stream" : "application/json");
   if (p.id == "openrouter") {
     http.addHeader("HTTP-Referer", "http://" + WiFi.localIP().toString());
-    http.addHeader("X-Title", "ESP32 Router");
+    http.addHeader("X-Title", "NixRoute");
   }
   http.setTimeout(30000);
   int code = http.POST(sendBody);
@@ -908,7 +908,7 @@ void handleApiWifi() {
 // Auth pages (login / logout)
 // ---------------------------------------------------------------------------
 void handleLogin() {
-  String html = R"HTML(<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Login — ESP32 Router</title><style>
+  String html = R"HTML(<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Login — NixRoute</title><style>
 :root{--bg:#0f172a;--surface:#1e293b;--border:#334155;--text:#e2e8f0;--muted:#94a3b8;--accent:#6366f1;--accent-h:#818cf8}
 *{box-sizing:border-box}body{margin:0;font-family:ui-sans-serif,system-ui,sans-serif;background:var(--bg);color:var(--text);display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}
 .card{width:100%;max-width:360px;background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:32px}
@@ -922,7 +922,7 @@ button{width:100%;padding:11px;border-radius:10px;border:0;background:var(--acce
 button:hover{background:var(--accent-h)}
 .hint{font-size:11px;color:var(--muted);margin-top:14px;text-align:center}
 code{background:#0d1526;border:1px solid var(--border);padding:1px 6px;border-radius:6px;font-size:11px}
-</style></head><body><div class="card"><div class="logo"><div class="mark">R</div><div><h1>ESP32 Router</h1><div class="sub">AI API Gateway</div></div></div>
+</style></head><body><div class="card"><div class="logo"><div class="mark">N</div><div><h1>NixRoute</h1><div class="sub">ESP32 API Gateway</div></div></div>
 <p class="sub">Sign in to the dashboard. Default password <code>123456</code>.</p>
 <form method="POST" action="/admin/login"><label>Password</label><input name="password" type="password" placeholder="••••••" required autofocus><button>Sign In</button></form>
 <p class="hint">Change the password in Settings after login.</p></div></body></html>)HTML";
@@ -965,7 +965,7 @@ void handleRoot() {
 void setup() {
   Serial.begin(115200);
   delay(300);
-  Serial.printf("\n=== ESP32 Router v%s ===\n", VERSION);
+  Serial.printf("\n=== NixRoute v%s ===\n", VERSION);
   g_bootMs = millis();
   loadConfig();
   Serial.printf("admin %s | token %s | wifi %s | providers %d\n",
@@ -986,8 +986,8 @@ void setup() {
       Serial.printf("\nWiFi FAIL %d\n", WiFi.status());
   } else {
     WiFi.mode(WIFI_AP);
-    WiFi.softAP("ESP32Router-Setup", "12345678");
-    Serial.printf("No WiFi configured — AP 'ESP32Router-Setup' (pw 12345678) IP %s\n",
+    WiFi.softAP("NixRoute-Setup", "12345678");
+    Serial.printf("No WiFi configured — AP 'NixRoute-Setup' (pw 12345678) IP %s\n",
                   WiFi.softAPIP().toString().c_str());
   }
 

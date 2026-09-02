@@ -203,8 +203,7 @@ void handleRoot(){
 <a href="#tools"><span>🔧</span>Tools</a>
 <div style="flex:1"></div>
 <a href="/admin/logout" style="color:#888;font-size:10px">Logout</a>
-</aside><div class=main><div class=header><div class=logo>NixRoute ESP32 <span style="font-weight:400;color:#666">— SuprimX · nixroute 0.5.59</span></div><div style="font-size:12px;color:#666">)HTML") + ip + R"HTML(</div></div><div class=wrap>
-)HTML")
+</aside><div class=main><div class=header><div class=logo>NixRoute ESP32 <span style="font-weight:400;color:#666">— SuprimX · nixroute 0.5.59</span></div><div style="font-size:12px;color:#666">)HTML") + ip + R"HTML(</div></div><div class=wrap>)HTML"
   + "<div class=card><h2>◉ API Endpoint</h2>"
   + "<div class=row><span class='badge on'>Local</span><div class=mono>http://"+ip+"/v1</div><button class='btn ghost' onclick=\"navigator.clipboard.writeText('http://"+ip+"/v1')\">Copy</button></div>"
   + "<div class=row><span class=badge>WiFi</span><div class=mono>"+(conn?ip+" · RSSI "+WiFi.RSSI()+"dBm":"disconnected")+"</div><span class='small "+(conn?"ok":"warn")+"'>"+(conn?"connected":"disconnected")+"</span></div>"

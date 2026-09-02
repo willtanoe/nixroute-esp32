@@ -83,17 +83,13 @@ struct ProxyJob {
   String model;         // requested model (for logging)
   String upstreamModel; // un-namespaced model to send upstream
   bool isStream;
-  size_t contentLength; // body byte count to stream (after model rewrite)
   int n;
   ProviderSnap providers[MAX_PROVIDERS];
   NetworkClient client;
   volatile bool bodyDone;  // set by the raw handler at RAW_END
+  volatile bool done;      // set by the proxy task when the job is finished
 };
 
-// Stream used by HTTPClient::sendRequest to pull the request body (already
-// rewritten) from the FreeRTOS stream buffer filled by the raw handler.
-// (Unused now that the proxy task streams the body directly via chunked
-// transfer encoding — kept out to avoid dead code.)
 
 Preferences prefs;
 String g_wifiSsid, g_wifiPass, g_adminPass;
@@ -481,9 +477,15 @@ bool authCheck() {
   String h = server.header("Authorization");
   for (int i = 0; i < g_tokenCount; i++) {
     String need = "Bearer " + g_tokens[i];
-    if (h.length() != need.length()) continue;
+    // constant-time compare over the longer of the two lengths (no early
+    // length rejection, which would leak the token length)
     volatile int d = 0;
-    for (unsigned j = 0; j < h.length(); j++) d |= h[j] ^ need[j];
+    size_t n = h.length() > need.length() ? h.length() : need.length();
+    for (size_t j = 0; j < n; j++) {
+      char a = j < h.length() ? h[j] : 0;
+      char b = j < need.length() ? need[j] : 0;
+      d |= a ^ b;
+    }
     if (d == 0) return true;
   }
   return false;
@@ -565,7 +567,7 @@ int resolveCandidates(String model, int* candidates, String* upstreamModel) {
 // ---------------------------------------------------------------------------
 // Raw HTTP response writers (used by the proxy task on Core 1)
 // ---------------------------------------------------------------------------
-void writeJson(NetworkClient& c, int code, const String& body) {
+bool writeJson(NetworkClient& c, int code, const String& body) {
   c.printf("HTTP/1.1 %d %s\r\n", code, reasonPhrase(code));
   c.print("Content-Type: application/json\r\n");
   c.print("Access-Control-Allow-Origin: *\r\n");
@@ -573,8 +575,9 @@ void writeJson(NetworkClient& c, int code, const String& body) {
   c.printf("Content-Length: %d\r\n", body.length());
   c.print("Connection: close\r\n");
   c.print("\r\n");
-  c.write(reinterpret_cast<const uint8_t*>(body.c_str()), body.length());
+  size_t w = c.write(reinterpret_cast<const uint8_t*>(body.c_str()), body.length());
   c.flush();
+  return w == body.length();
 }
 
 void writeErrorRaw(NetworkClient& c, int code, const String& msg) {
@@ -707,8 +710,9 @@ String readBodyManual(WiFiClientSecure& client, bool chunked, size_t contentLeng
   return body;
 }
 
-void streamResponseManual(WiFiClientSecure& client, bool chunked, size_t contentLength,
+bool streamResponseManual(WiFiClientSecure& client, bool chunked, size_t contentLength,
                           NetworkClient& c, uint32_t* pt, uint32_t* ct, uint32_t* tt) {
+  bool sent = true;
   c.print("HTTP/1.1 200 OK\r\n");
   c.print("Content-Type: text/event-stream\r\n");
   c.print("Access-Control-Allow-Origin: *\r\n");
@@ -733,10 +737,10 @@ void streamResponseManual(WiFiClientSecure& client, bool chunked, size_t content
       want = remaining > sizeof(buf) ? sizeof(buf) : remaining;
     } else {
       size_t avail = client.available();
-      if (!avail) { 
-        if (!client.connected() || millis() - startT > 5000) break; 
-        delay(1); 
-        continue; 
+      if (!avail) {
+        if (!client.connected() || millis() - startT > 5000) break;
+        delay(1);
+        continue;
       }
       want = avail > sizeof(buf) ? sizeof(buf) : avail;
     }
@@ -744,8 +748,9 @@ void streamResponseManual(WiFiClientSecure& client, bool chunked, size_t content
     if (r <= 0) break;
     startT = millis();
     c.printf("%x\r\n", (unsigned)r);
-    c.write(buf, r);
+    size_t w = c.write(buf, r);
     c.print("\r\n");
+    if (w != (size_t)r) { sent = false; break; }  // client gone mid-stream
     c.flush();
     tail.concat((const char*)buf, (unsigned)r);
     if (tail.length() > 2048) tail.remove(0, tail.length() - 2048);
@@ -756,17 +761,19 @@ void streamResponseManual(WiFiClientSecure& client, bool chunked, size_t content
       remaining -= r;
     }
   }
-  c.print("0\r\n\r\n");
-  c.flush();
+  if (sent) { c.print("0\r\n\r\n"); c.flush(); }
   if (!parseUsage(tail, *pt, *ct, *tt)) { *pt = *ct = *tt = 0; }
+  return sent;
 }
 
 // ---------------------------------------------------------------------------
 // Proxy engine (runs on Core 1)
 // ---------------------------------------------------------------------------
 int doUpstream(const ProviderSnap& p, bool isStream, volatile bool* bodyDone,
-               NetworkClient& c, const String& fullModel, uint32_t& outTokens) {
+               NetworkClient& c, const String& fullModel, uint32_t& outTokens,
+               bool* delivered) {
   outTokens = 0;
+  if (delivered) *delivered = true;
   String host;
   uint16_t port;
   String path;
@@ -821,14 +828,16 @@ int doUpstream(const ProviderSnap& p, bool isStream, volatile bool* bodyDone,
   bool ok = (code >= 200 && code < 300);
   if (ok) {
     uint32_t pt = 0, ct = 0, tt = 0;
+    bool sent = true;
     if (isStream) {
-      streamResponseManual(client, chunked, contentLength, c, &pt, &ct, &tt);
+      sent = streamResponseManual(client, chunked, contentLength, c, &pt, &ct, &tt);
     } else {
       String resp = readBodyManual(client, chunked, contentLength);
       parseUsage(resp, pt, ct, tt);
-      writeJson(c, 200, resp.length() ? resp : "{}");
+      sent = writeJson(c, 200, resp.length() ? resp : "{}");
     }
-    recordUsage(fullModel.c_str(), pt, ct, tt, lat, true);
+    if (delivered) *delivered = sent;
+    recordUsage(fullModel.c_str(), pt, ct, tt, lat, sent);
     outTokens = tt;
   } else {
     readBodyManual(client, chunked, contentLength);  // drain
@@ -845,14 +854,17 @@ void processProxyJob(ProxyJob* job) {
 
   int lastCode = 0;
   bool ok = false;
+  bool delivered = true;
   unsigned long t0 = millis();
   uint32_t tokens = 0;
   uint32_t start = g_rr++ % job->n;
   for (int k = 0; k < job->n; k++) {
     const ProviderSnap& p = job->providers[(start + k) % job->n];
     String fullModel = p.id + "/" + job->upstreamModel;
-    int code = doUpstream(p, job->isStream, &job->bodyDone, c, fullModel, tokens);
+    bool sent = true;
+    int code = doUpstream(p, job->isStream, &job->bodyDone, c, fullModel, tokens, &sent);
     lastCode = code;
+    if (!sent) delivered = false;
     if (code >= 200 && code < 300) { ok = true; break; }
     // Only fail over when the connection failed before the body was consumed
     // (code <= 0). A 4xx/5xx response means the body was already streamed.
@@ -860,11 +872,16 @@ void processProxyJob(ProxyJob* job) {
     break;
   }
 
-  if (ok) {
+  statsLock();
+  if (ok && delivered) {
     g_reqOk++;
     g_latencySum += millis() - t0;
   } else {
     g_reqFail++;
+  }
+  statsUnlock();
+
+  if (!ok) {
     if (lastCode == 429) writeErrorRaw(c, 429, "all providers rate-limited");
     else if (lastCode >= 500 || lastCode <= 0) writeErrorRaw(c, 502, "all providers failed");
     else writeErrorRaw(c, lastCode > 0 ? lastCode : 502, "upstream error");
@@ -876,14 +893,19 @@ void processProxyJob(ProxyJob* job) {
   telem["model"] = job->model;
   telem["latency_ms"] = millis() - t0;
   telem["tokens"] = tokens;
-  telem["status"] = ok ? "ok" : "fail";
+  telem["status"] = (ok && delivered) ? "ok" : "fail";
   String tj;
   serializeJson(telem, tj);
   broadcastWs(tj);
 
-  Serial.printf("chat model=%s candidates=%d code=%d heap=%d core=%d\n",
-                job->model.c_str(), job->n, lastCode, ESP.getFreeHeap(), xPortGetCoreID());
+  Serial.printf("chat model=%s candidates=%d code=%d delivered=%d heap=%d core=%d\n",
+                job->model.c_str(), job->n, lastCode, delivered ? 1 : 0,
+                ESP.getFreeHeap(), xPortGetCoreID());
+  if (ok && !delivered)
+    Serial.printf("WARN: upstream 200 but client write failed (socket closed early?)\n");
   c.stop();
+  job->done = true;
+  if (g_currentJob == job) g_currentJob = NULL;
 }
 
 void proxyTask(void*) {
@@ -942,13 +964,17 @@ void wsSendFrame(WiFiClient& c, const String& msg) {
 }
 
 void broadcastWs(const String& msg) {
+  // Snapshot the connected clients under the lock, then do the blocking
+  // socket writes outside it so /health and /api/state never stall behind
+  // a slow WebSocket client.
+  WiFiClient targets[MAX_WS_CLIENTS];
+  int nTargets = 0;
   statsLock();
   for (int i = 0; i < MAX_WS_CLIENTS; i++) {
-    if (wsClients[i] && wsClients[i].connected()) {
-      wsSendFrame(wsClients[i], msg);
-    }
+    if (wsClients[i] && wsClients[i].connected()) targets[nTargets++] = wsClients[i];
   }
   statsUnlock();
+  for (int i = 0; i < nTargets; i++) wsSendFrame(targets[i], msg);
 }
 
 void wsAcceptClients() {
@@ -963,8 +989,7 @@ void wsAcceptClients() {
       line.trim();
       if (line.length() == 0) break;
       if (line.startsWith("Upgrade:") && line.indexOf("websocket") >= 0) upgrade = true;
-      if (line.startsWith("Sec-WebSocket-Key:")) key = line.substring(18);
-      key.trim();
+      if (line.startsWith("Sec-WebSocket-Key:")) { key = line.substring(18); key.trim(); }
     }
   }
   if (!upgrade || key.length() == 0) { nc.stop(); return; }
@@ -1069,6 +1094,19 @@ void handleOptions() {
 #define HEAD_MAX 2048
 static const char* STREAM_OPTS = ",\"stream_options\":{\"include_usage\":true}";
 
+// Robust boolean-JSON-flag lookup: matches "stream":true regardless of the
+// whitespace around the colon.
+bool jsonFlagTrue(const String& head, const char* key) {
+  String pat = String("\"") + key + "\"";
+  int k = head.indexOf(pat);
+  if (k < 0) return false;
+  int i = head.indexOf(':', k + pat.length());
+  if (i < 0) return false;
+  i++;
+  while (i < (int)head.length() && (head[i] == ' ' || head[i] == '\t')) i++;
+  return head.substring(i).startsWith("true");
+}
+
 // Called once the request head (first ~2 KB) has been read. Detects "model",
 // rewrites it to the upstream name, injects stream_options, snapshots providers,
 // and enqueues the job. The rewritten head + remaining body are streamed to the
@@ -1083,23 +1121,18 @@ void detectAndStream() {
   }
   if (!model.length()) { g_chatError = "missing model"; g_chatErrorCode = 400; return; }
 
-  bool isStream = g_head.indexOf("\"stream\":true") >= 0 || g_head.indexOf("\"stream\": true") >= 0;
+  bool isStream = jsonFlagTrue(g_head, "stream");
 
   int candidates[MAX_PROVIDERS];
   String upstreamModel;
   int n = resolveCandidates(model, candidates, &upstreamModel);
   if (n == 0) { g_chatError = "no active provider available"; g_chatErrorCode = 500; return; }
 
-  size_t origCL = 0;
-  if (server.hasHeader("Content-Length")) origCL = server.header("Content-Length").toInt();
-
   // rewrite model value in the head
   int q1 = g_head.indexOf('"', mi + 7);
   int q2 = q1 >= 0 ? g_head.indexOf('"', q1 + 1) : -1;
-  size_t origModelLen = (q1 > 0 && q2 > q1) ? (size_t)(q2 - q1 - 1) : 0;
   if (q1 > 0 && q2 > q1)
     g_head = g_head.substring(0, q1 + 1) + upstreamModel + g_head.substring(q2);
-  size_t newCL = origCL - origModelLen + upstreamModel.length();
 
   // inject stream_options right after the (rewritten) model value
   if (isStream && g_head.indexOf("stream_options") < 0) {
@@ -1108,7 +1141,6 @@ void detectAndStream() {
     int a2 = a1 >= 0 ? g_head.indexOf('"', a1 + 1) : -1;
     if (a1 > 0 && a2 > a1) {
       g_head = g_head.substring(0, a2 + 1) + STREAM_OPTS + g_head.substring(a2 + 1);
-      newCL += strlen(STREAM_OPTS);
     }
   }
 
@@ -1116,8 +1148,8 @@ void detectAndStream() {
   job->model = model;
   job->upstreamModel = upstreamModel;
   job->isStream = isStream;
-  job->contentLength = newCL;
   job->n = n;
+  job->done = false;
   for (int k = 0; k < n; k++) {
     int idx = candidates[k];
     job->providers[k].id = g_providers[idx].id;
@@ -1150,8 +1182,10 @@ void handleChatRaw() {
     g_headDone = false;
     g_chatError = "";
     g_chatErrorCode = 0;
-    g_currentJob = NULL;
-    if (!authCheck()) { g_chatError = "unauthorized"; g_chatErrorCode = 401; g_headDone = true; }
+    // g_bodyStream/g_head are single globals: only one chat request may be
+    // in flight. Reject overlapping requests with 503.
+    if (g_currentJob) { g_chatError = "proxy busy, try again"; g_chatErrorCode = 503; g_headDone = true; }
+    if (!g_chatError.length() && !authCheck()) { g_chatError = "unauthorized"; g_chatErrorCode = 401; g_headDone = true; }
     return;
   }
 
@@ -1189,9 +1223,13 @@ void handleChatRaw() {
 void handleChat() {
   // Runs after the body has been fully streamed. The proxy task (Core 1) owns
   // the response; here we only surface early errors detected during streaming.
+  statsLock();
   g_reqTotal++;
+  statsUnlock();
   if (g_chatError.length() > 0) {
+    statsLock();
     g_reqFail++;
+    statsUnlock();
     sendError(g_chatErrorCode, g_chatError);
   }
 }

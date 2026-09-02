@@ -71,6 +71,7 @@ firmware_arduino/esp32_router/
   dashboard_html.h    # dashboard SPA (HTML/CSS/JS, stored in flash via PROGMEM)
 assets/
   nixroute.svg        # brand logo (dashboard, favicon, README)
+  screenshots/        # dashboard screenshots (README)
 tests/scripts/        # host-side HTTP smoke tests (no hardware needed)
 ```
 
@@ -120,6 +121,21 @@ as `<provider>/<model>`. Leave the key empty to skip fetching (routing then fall
 other providers). Use the **active** toggle to disable a provider without deleting it.
 
 Auth: `POST /admin/login` sets an `esp_auth=ok` cookie (24 h); `GET /admin/logout` clears it.
+
+---
+
+## Screenshots
+
+<table>
+  <tr>
+    <td align="center"><img src="assets/screenshots/1.png" alt="Overview" width="400"><br><strong>Overview</strong></td>
+    <td align="center"><img src="assets/screenshots/2.png" alt="Usage" width="400"><br><strong>Usage</strong></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="assets/screenshots/3.png" alt="Providers" width="400"><br><strong>Providers</strong></td>
+    <td align="center"><img src="assets/screenshots/4.png" alt="Settings" width="400"><br><strong>Settings</strong></td>
+  </tr>
+</table>
 
 ---
 

@@ -405,10 +405,17 @@ function toast(msg,type){var t=document.createElement('div');t.className='toast 
   document.getElementById('toast').appendChild(t);setTimeout(function(){t.remove()},4000)}
 async function api(path,opts){opts=opts||{};
   opts.headers=opts.headers||{};opts.headers['X-NixRoute']='1';   // CSRF guard
-  var r=await fetch(path,opts);
-  if(r.status===401){location.href='/login';throw new Error('unauthorized')}
-  var d=await r.json().catch(function(){return{}});
-  if(!r.ok)throw new Error((d.error&&d.error.message)||('HTTP '+r.status));return d}
+  for(var attempt=0;attempt<2;attempt++){
+    var r=await fetch(path,opts);
+    if(r.status===401){
+      // Transient header-parse hiccup on fresh connections: retry once before
+      // treating it as a real auth failure and bouncing to /login.
+      if(attempt===0){await new Promise(function(res){setTimeout(res,400)});continue}
+      location.href='/login';throw new Error('unauthorized')
+    }
+    var d=await r.json().catch(function(){return{}});
+    if(!r.ok)throw new Error((d.error&&d.error.message)||('HTTP '+r.status));return d
+  }}
 function post(path,body){return api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})})}
 function epUrl(){return S&&S.wifi.ip?('http://'+S.wifi.ip+'/v1'):''}
 function authHeaders(){var h={'Content-Type':'application/json'};if(S&&S.token.list&&S.token.list.length)h['Authorization']='Bearer '+S.token.list[0];return h}

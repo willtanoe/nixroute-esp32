@@ -29,12 +29,12 @@
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
+#include "freertos/stream_buffer.h"
 #include "dashboard_html.h"
 
 #define VERSION          "3.2.0"
 #define MAX_PROVIDERS    16
 #define MAX_MODELS_CACHE 200
-#define MAX_BODY         8192
 #define MAX_USAGE_LOG    20
 #define MAX_USAGE_MODELS 32
 #define PROXY_QUEUE_LEN  4
@@ -78,13 +78,32 @@ struct ModelUsage {
 // never touches the provider array (which admin mutates on Core 0).
 struct ProviderSnap { String id, name, url, key; };
 struct ProxyJob {
-  String body;
   String model;         // requested model (for logging)
   String upstreamModel; // un-namespaced model to send upstream
   bool isStream;
+  size_t contentLength; // body byte count to stream (after model rewrite)
   int n;
   ProviderSnap providers[MAX_PROVIDERS];
   NetworkClient client;
+};
+
+// Stream used by HTTPClient::sendRequest to pull the request body (already
+// rewritten) from the FreeRTOS stream buffer filled by the raw handler.
+extern StreamBufferHandle_t g_bodyStream;
+
+class BodyStream : public Stream {
+public:
+  int available() override { return (int)xStreamBufferBytesAvailable(g_bodyStream); }
+  int read() override {
+    uint8_t b;
+    if (xStreamBufferReceive(g_bodyStream, &b, 1, pdMS_TO_TICKS(10000)) == 1) return b;
+    return -1;
+  }
+  int peek() override { return -1; }
+  size_t write(uint8_t) override { return 0; }
+  size_t write(const uint8_t*, size_t) override { return 0; }
+  int availableForWrite() override { return 0; }
+  void flush() override {}
 };
 
 Preferences prefs;
@@ -112,7 +131,15 @@ int g_modelUsageCount = 0;
 // FreeRTOS primitives
 QueueHandle_t g_proxyQueue = NULL;
 SemaphoreHandle_t g_statsMutex = NULL;
+StreamBufferHandle_t g_bodyStream = NULL;
 TaskHandle_t g_webTask = NULL, g_proxyTask = NULL;
+
+// Zero-copy request streaming state (owned by the WebServer task, Core 0)
+String g_head;          // first ~2 KB of the request body (to detect "model")
+bool g_headDone = false;
+String g_chatError;
+int g_chatErrorCode = 0;
+BodyStream g_bodyStreamReader;
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -579,7 +606,7 @@ void writeStream(NetworkClient& c, HTTPClient& http, uint32_t* pt, uint32_t* ct,
 // ---------------------------------------------------------------------------
 // Proxy engine (runs on Core 1)
 // ---------------------------------------------------------------------------
-int doUpstream(const ProviderSnap& p, const String& sendBody, bool isStream,
+int doUpstream(const ProviderSnap& p, size_t contentLength, bool isStream,
                NetworkClient& c, const String& fullModel) {
   String url = apiRoot(p.url) + "/chat/completions";
   unsigned long t0 = millis();
@@ -599,7 +626,9 @@ int doUpstream(const ProviderSnap& p, const String& sendBody, bool isStream,
     http.addHeader("X-Title", "NixRoute");
   }
   http.setTimeout(30000);
-  int code = http.POST(sendBody);
+  // Stream the (already rewritten) request body from the stream buffer without
+  // ever buffering it fully in RAM.
+  int code = http.sendRequest("POST", &g_bodyStreamReader, contentLength);
   unsigned long lat = millis() - t0;
 
   bool ok = (code >= 200 && code < 300);
@@ -626,21 +655,6 @@ int doUpstream(const ProviderSnap& p, const String& sendBody, bool isStream,
 void processProxyJob(ProxyJob* job) {
   NetworkClient& c = job->client;
 
-  // build the upstream body once (model rewrite + stream_options)
-  String sendBody = job->body;
-  int mi = sendBody.indexOf("\"model\"");
-  if (mi >= 0) {
-    int q1 = sendBody.indexOf('"', mi + 7);
-    int q2 = q1 >= 0 ? sendBody.indexOf('"', q1 + 1) : -1;
-    if (q1 > 0 && q2 > q1)
-      sendBody = sendBody.substring(0, q1 + 1) + job->upstreamModel + sendBody.substring(q2);
-  }
-  if (job->isStream && sendBody.indexOf("stream_options") < 0) {
-    int last = sendBody.lastIndexOf('}');
-    if (last > 0)
-      sendBody = sendBody.substring(0, last) + ",\"stream_options\":{\"include_usage\":true}" + sendBody.substring(last);
-  }
-
   int lastCode = 0;
   bool ok = false;
   unsigned long t0 = millis();
@@ -648,10 +662,12 @@ void processProxyJob(ProxyJob* job) {
   for (int k = 0; k < job->n; k++) {
     const ProviderSnap& p = job->providers[(start + k) % job->n];
     String fullModel = p.id + "/" + job->upstreamModel;
-    int code = doUpstream(p, sendBody, job->isStream, c, fullModel);
+    int code = doUpstream(p, job->contentLength, job->isStream, c, fullModel);
     if (code >= 200 && code < 300) { ok = true; break; }
     lastCode = code;
-    if (code == 429 || code >= 500 || code == 0) continue;
+    // Only fail over when the connection failed before the body was consumed
+    // (code <= 0). A 4xx/5xx response means the body was already streamed.
+    if (code <= 0) continue;
     break;
   }
 
@@ -661,7 +677,7 @@ void processProxyJob(ProxyJob* job) {
   } else {
     g_reqFail++;
     if (lastCode == 429) writeErrorRaw(c, 429, "all providers rate-limited");
-    else if (lastCode >= 500 || lastCode == 0) writeErrorRaw(c, 502, "all providers failed");
+    else if (lastCode >= 500 || lastCode <= 0) writeErrorRaw(c, 502, "all providers failed");
     else writeErrorRaw(c, lastCode > 0 ? lastCode : 502, "upstream error");
   }
   Serial.printf("chat model=%s candidates=%d code=%d heap=%d core=%d\n",
@@ -762,39 +778,58 @@ void handleOptions() {
   server.send(204, "", "");
 }
 
-void handleChat() {
-  g_reqTotal++;
-  if (!authCheck()) { g_reqFail++; sendError(401, "unauthorized"); return; }
+// Zero-copy streaming helpers (run on Core 0, in the WebServer task).
+#define HEAD_MAX 2048
+static const char* STREAM_OPTS = ",\"stream_options\":{\"include_usage\":true}";
 
-  if (server.hasHeader("Content-Length")) {
-    long cl = server.header("Content-Length").toInt();
-    if (cl > MAX_BODY) { g_reqFail++; sendError(413, "payload too large"); return; }
-  }
-  String body = server.arg("plain");
-  if (body.length() == 0) { g_reqFail++; sendError(400, "empty body"); return; }
-  if (body.length() > MAX_BODY) { g_reqFail++; sendError(413, "payload too large"); return; }
-
+// Called once the request head (first ~2 KB) has been read. Detects "model",
+// rewrites it to the upstream name, injects stream_options, snapshots providers,
+// and enqueues the job. The rewritten head + remaining body are streamed to the
+// proxy task via g_bodyStream.
+void detectAndStream() {
   String model = "";
-  int mi = body.indexOf("\"model\"");
+  int mi = g_head.indexOf("\"model\"");
   if (mi >= 0) {
-    int q1 = body.indexOf('"', mi + 7);
-    int q2 = q1 >= 0 ? body.indexOf('"', q1 + 1) : -1;
-    if (q1 > 0 && q2 > q1) model = body.substring(q1 + 1, q2);
+    int q1 = g_head.indexOf('"', mi + 7);
+    int q2 = q1 >= 0 ? g_head.indexOf('"', q1 + 1) : -1;
+    if (q1 > 0 && q2 > q1) model = g_head.substring(q1 + 1, q2);
   }
-  if (!model.length()) { g_reqFail++; sendError(400, "missing model"); return; }
+  if (!model.length()) { g_chatError = "missing model"; g_chatErrorCode = 400; return; }
 
-  bool isStream = body.indexOf("\"stream\":true") >= 0 || body.indexOf("\"stream\": true") >= 0;
+  bool isStream = g_head.indexOf("\"stream\":true") >= 0 || g_head.indexOf("\"stream\": true") >= 0;
 
   int candidates[MAX_PROVIDERS];
   String upstreamModel;
   int n = resolveCandidates(model, candidates, &upstreamModel);
-  if (n == 0) { g_reqFail++; sendError(500, "no active provider available"); return; }
+  if (n == 0) { g_chatError = "no active provider available"; g_chatErrorCode = 500; return; }
+
+  size_t origCL = 0;
+  if (server.hasHeader("Content-Length")) origCL = server.header("Content-Length").toInt();
+
+  // rewrite model value in the head
+  int q1 = g_head.indexOf('"', mi + 7);
+  int q2 = q1 >= 0 ? g_head.indexOf('"', q1 + 1) : -1;
+  size_t origModelLen = (q1 > 0 && q2 > q1) ? (size_t)(q2 - q1 - 1) : 0;
+  if (q1 > 0 && q2 > q1)
+    g_head = g_head.substring(0, q1 + 1) + upstreamModel + g_head.substring(q2);
+  size_t newCL = origCL - origModelLen + upstreamModel.length();
+
+  // inject stream_options right after the (rewritten) model value
+  if (isStream && g_head.indexOf("stream_options") < 0) {
+    int m2 = g_head.indexOf("\"model\"");
+    int a1 = g_head.indexOf('"', m2 + 7);
+    int a2 = a1 >= 0 ? g_head.indexOf('"', a1 + 1) : -1;
+    if (a1 > 0 && a2 > a1) {
+      g_head = g_head.substring(0, a2 + 1) + STREAM_OPTS + g_head.substring(a2 + 1);
+      newCL += strlen(STREAM_OPTS);
+    }
+  }
 
   ProxyJob* job = new ProxyJob();
-  job->body = body;
   job->model = model;
   job->upstreamModel = upstreamModel;
   job->isStream = isStream;
+  job->contentLength = newCL;
   job->n = n;
   for (int k = 0; k < n; k++) {
     int idx = candidates[k];
@@ -807,11 +842,67 @@ void handleChat() {
 
   if (xQueueSend(g_proxyQueue, &job, 0) != pdTRUE) {
     delete job;
-    g_reqFail++;
-    sendError(503, "proxy busy, try again");
+    g_chatError = "proxy busy, try again";
+    g_chatErrorCode = 503;
     return;
   }
-  // No response here — the proxy task writes directly to the client socket.
+
+  // stream the rewritten head into the body pipe
+  xStreamBufferSend(g_bodyStream, (const uint8_t*)g_head.c_str(), g_head.length(), pdMS_TO_TICKS(10000));
+}
+
+// Raw body handler: streams the request body to the proxy task chunk-by-chunk
+// without ever buffering it fully in RAM (removes the 8 KB limit).
+void handleChatRaw() {
+  HTTPRaw& raw = server.raw();
+
+  if (raw.status == RAW_START) {
+    g_head = "";
+    g_headDone = false;
+    g_chatError = "";
+    g_chatErrorCode = 0;
+    if (!authCheck()) { g_chatError = "unauthorized"; g_chatErrorCode = 401; g_headDone = true; }
+    return;
+  }
+
+  if (raw.status == RAW_END) {
+    if (!g_headDone && g_chatError.length() == 0) {
+      g_chatError = "missing model";
+      g_chatErrorCode = 400;
+    }
+    return;
+  }
+
+  // RAW_WRITE
+  if (g_chatError.length() > 0) return;  // discard body on error
+
+  const uint8_t* buf = raw.buf;
+  size_t len = raw.currentSize;
+
+  if (!g_headDone) {
+    size_t toHead = len;
+    if (g_head.length() + toHead > HEAD_MAX) toHead = HEAD_MAX - g_head.length();
+    g_head.concat((const char*)buf, toHead);
+
+    if (g_head.indexOf("\"model\"") >= 0 || g_head.length() >= HEAD_MAX) {
+      detectAndStream();
+      g_headDone = true;
+      if (len > toHead)
+        xStreamBufferSend(g_bodyStream, buf + toHead, len - toHead, pdMS_TO_TICKS(10000));
+    }
+  } else {
+    xStreamBufferSend(g_bodyStream, buf, len, pdMS_TO_TICKS(10000));
+  }
+}
+
+void handleChat() {
+  // Runs after the body has been fully streamed. The proxy task (Core 1) owns
+  // the response; here we only surface early errors detected during streaming.
+  g_reqTotal++;
+  if (g_chatError.length() > 0) {
+    g_reqFail++;
+    sendError(g_chatErrorCode, g_chatError);
+  }
 }
 
 void handleNotFound() { sendError(404, "not found"); }
@@ -1174,7 +1265,7 @@ void setup() {
   server.on("/health", HTTP_GET, handleHealth);
   server.on("/admin/status", HTTP_GET, handleHealth);
   server.on("/v1/models", HTTP_GET, handleModels);
-  server.on("/v1/chat/completions", HTTP_POST, handleChat);
+  server.on("/v1/chat/completions", HTTP_POST, handleChat, handleChatRaw);
 
   // Admin JSON API
   server.on("/api/state", HTTP_GET, handleApiState);
@@ -1193,13 +1284,14 @@ void setup() {
   server.on("/v1/models", HTTP_OPTIONS, handleOptions);
 
   server.onNotFound(handleNotFound);
-  const char* hk[] = {"Authorization", "Cookie"};
-  server.collectHeaders(hk, 2);
+  const char* hk[] = {"Authorization", "Cookie", "Content-Length"};
+  server.collectHeaders(hk, 3);
   server.begin();
 
   // FreeRTOS primitives
   g_statsMutex = xSemaphoreCreateMutex();
   g_proxyQueue = xQueueCreate(PROXY_QUEUE_LEN, sizeof(ProxyJob*));
+  g_bodyStream = xStreamBufferCreate(8192, 1);
 
   // Pin the WebServer to Core 0 and the proxy engine to Core 1.
   xTaskCreatePinnedToCore(webServerTask, "web", 8192, NULL, 1, &g_webTask, 0);

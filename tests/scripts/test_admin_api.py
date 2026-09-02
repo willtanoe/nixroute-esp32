@@ -48,7 +48,7 @@ def add_provider(base, cookie, name, url, key):
     req = urllib.request.Request(
         f"{base}/api/providers",
         data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json", "Cookie": cookie},
+        headers={"Content-Type": "application/json", "Cookie": cookie, "X-NixRoute": "1"},
     )
     with urllib.request.urlopen(req, timeout=30) as r:
         data = json.loads(r.read().decode())

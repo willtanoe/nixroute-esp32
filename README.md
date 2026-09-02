@@ -58,6 +58,8 @@ onion you expose over a VPN, not the open internet.
   for every provider.
 - **Glassmorphism dashboard** — a clean, responsive single-page dashboard with no
   external dependencies, served from flash and fully usable offline on your LAN.
+  Liquid-glass dark theme by default, with a light mode toggle (remembered per
+  browser).
 - **Persistence** — providers, keys, Wi-Fi, API tokens, and the admin password live
   in NVS via `Preferences`.
 - **Auth** — optional Bearer tokens for `/v1/*` and a random per-boot session cookie
@@ -215,6 +217,10 @@ relayed, a second one gets `503 {"error":{"message":"proxy busy, try again"}}`.
 
 Responses carry `Access-Control-Allow-Origin: *` and `Cache-Control: no-store`.
 Errors are OpenAI-shaped: `{"error":{"message":"…"}}`.
+
+> **CSRF note:** state-changing admin calls (`POST`) must include the header
+> `X-NixRoute: 1`. The dashboard sends it automatically; a cross-site form
+> cannot. Plain `GET` reads (e.g. `/api/state`) are cookie-only.
 
 ### Examples
 

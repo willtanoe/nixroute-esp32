@@ -225,6 +225,45 @@ input:focus,select:focus,textarea:focus{border-color:rgba(47,211,222,.7);box-sha
 .kv .val.open{color:var(--ok)}
 table td,table th{border-color:rgba(255,255,255,.075)}
 .empty{color:var(--subtle)}
+
+/* ---- Light theme (Liquid Glass, light) ---- */
+html[data-theme="light"]{
+  --bg:#eef1f9; --surface:rgba(255,255,255,.55); --surface-2:rgba(255,255,255,.72);
+  --surface-3:rgba(255,255,255,.4); --border:rgba(23,34,66,.12); --border-2:rgba(23,34,66,.20);
+  --text:#182033; --muted:#52617f; --subtle:#6b7a99;
+  --accent:#0897a6; --accent-h:#0ba9bb; --accent-soft:rgba(8,151,166,.15);
+  --ok:#158a4c; --warn:#a86f13; --danger:#d93643; --radius:20px;
+}
+html[data-theme="light"] body{
+  background:radial-gradient(1200px 680px at 88% -12%,rgba(150,175,235,.5),transparent 62%),
+    radial-gradient(980px 600px at -8% 20%,rgba(70,190,205,.28),transparent 55%),
+    radial-gradient(760px 560px at 50% 118%,rgba(150,120,255,.22),transparent 60%),
+    linear-gradient(180deg,#eef2fb 0%,#e7ecf8 55%,#eef1fa 100%);
+  background-attachment:fixed}
+html[data-theme="light"] body::before{background:rgba(60,200,215,.22)}
+html[data-theme="light"] body::after{background:rgba(130,150,255,.25)}
+html[data-theme="light"] header{background:rgba(255,255,255,.5);border-bottom-color:rgba(23,34,66,.10)}
+html[data-theme="light"] .card{background:radial-gradient(120% 70% at 50% -15%,rgba(255,255,255,.75),transparent 55%),
+   linear-gradient(180deg,rgba(255,255,255,.66),rgba(255,255,255,.4));
+  border-color:rgba(255,255,255,.9);
+  box-shadow:0 20px 50px rgba(70,90,150,.16),inset 0 1px 0 rgba(255,255,255,.95)}
+html[data-theme="light"] .stat{background:rgba(255,255,255,.6);border-color:rgba(23,34,66,.10);box-shadow:inset 0 1px 0 rgba(255,255,255,.9)}
+html[data-theme="light"] .provider{background:linear-gradient(180deg,rgba(255,255,255,.62),rgba(255,255,255,.42));border-color:rgba(23,34,66,.10)}
+html[data-theme="light"] .snippet{background:rgba(255,255,255,.5);border-color:rgba(23,34,66,.10)}
+html[data-theme="light"] input,select,textarea{background:rgba(255,255,255,.72);border-color:rgba(23,34,66,.18)}
+html[data-theme="light"] .btn{color:#032229;background:linear-gradient(180deg,#2bd0dc,#0aa7b6);box-shadow:0 8px 20px rgba(8,151,166,.3),inset 0 1px 0 rgba(255,255,255,.5)}
+html[data-theme="light"] .btn.ghost{background:rgba(255,255,255,.6);border-color:rgba(23,34,66,.2);color:var(--text);box-shadow:inset 0 1px 0 rgba(255,255,255,.7)}
+html[data-theme="light"] .btn.ghost:hover{background:rgba(255,255,255,.85)}
+html[data-theme="light"] .btn.danger{color:var(--danger)}
+html[data-theme="light"] .tabs button.on{background:rgba(255,255,255,.85);box-shadow:inset 0 0 0 1px rgba(23,34,66,.14)}
+html[data-theme="light"] .tabs button:hover{background:rgba(255,255,255,.55)}
+html[data-theme="light"] .pill.off{color:var(--muted);background:rgba(255,255,255,.5);border-color:rgba(23,34,66,.16)}
+html[data-theme="light"] .chip{background:rgba(255,255,255,.6);border-color:rgba(23,34,66,.12)}
+html[data-theme="light"] .pg-output{background:rgba(255,255,255,.6);border-color:rgba(23,34,66,.12)}
+html[data-theme="light"] #toast .toast{background:rgba(255,255,255,.92);border-color:rgba(23,34,66,.16)}
+html[data-theme="light"] .heapbar .track{background:rgba(23,34,66,.12)}
+html[data-theme="light"] table td,table th{border-color:rgba(23,34,66,.08)}
+html[data-theme="light"] .kv .val.open{color:var(--ok)}
 </style>
 </head>
 <body>
@@ -239,6 +278,7 @@ table td,table th{border-color:rgba(255,255,255,.075)}
       <div class="lbl"><span>Free Heap</span><span id="hdr-heap">—</span></div>
       <div class="track"><div class="fill" id="hdr-heap-fill" style="width:0%"></div></div>
     </div>
+    <button class="btn ghost sm" id="theme-btn" onclick="toggleTheme()" title="Switch light/dark theme">Dark</button>
     <button class="btn ghost sm" onclick="location.href='/admin/logout'" title="Logout">Logout</button>
   </div>
 </header>
@@ -363,7 +403,9 @@ function $(s){return document.querySelector(s)}
 function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
 function toast(msg,type){var t=document.createElement('div');t.className='toast '+(type||'');t.textContent=msg;
   document.getElementById('toast').appendChild(t);setTimeout(function(){t.remove()},4000)}
-async function api(path,opts){opts=opts||{};var r=await fetch(path,opts);
+async function api(path,opts){opts=opts||{};
+  opts.headers=opts.headers||{};opts.headers['X-NixRoute']='1';   // CSRF guard
+  var r=await fetch(path,opts);
   if(r.status===401){location.href='/login';throw new Error('unauthorized')}
   var d=await r.json().catch(function(){return{}});
   if(!r.ok)throw new Error((d.error&&d.error.message)||('HTTP '+r.status));return d}
@@ -685,9 +727,21 @@ function connectWs(){
   }catch(_){}
 }
 
+function setTheme(t){
+  document.documentElement.dataset.theme=t;
+  try{localStorage.setItem('nx-theme',t)}catch(_){}
+  var b=document.getElementById('theme-btn');
+  if(b)b.textContent=(t==='dark'?'Light':'Dark');
+}
+function toggleTheme(){
+  var cur=document.documentElement.dataset.theme||'dark';
+  setTheme(cur==='dark'?'light':'dark');
+}
+
 (function init(){
   var v=(location.hash||'').replace('#/','');
   if(['overview','usage','playground','providers','settings'].indexOf(v)<0)v='overview';
+  try{setTheme(localStorage.getItem('nx-theme')||'dark')}catch(_){setTheme('dark')}
   show(v);load();
   // Local uptime ticker — increments every second between server polls.
   setInterval(function(){var el=document.getElementById('uptime-val');if(el&&uptimeAt)el.textContent=fmtUptime(uptimeBase+Math.floor((Date.now()-uptimeAt)/1000))},1000);

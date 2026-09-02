@@ -589,9 +589,15 @@ void sendError(int code, const String& msg) {
 }
 
 bool requireAdmin() {
-  if (isAuthenticated()) return true;
-  sendError(401, "unauthorized");
-  return false;
+  if (!isAuthenticated()) { sendError(401, "unauthorized"); return false; }
+  // CSRF guard: any state-changing admin call must carry X-NixRoute: 1, which
+  // the dashboard sends but a cross-site <form>/<img> cannot. GET reads stay
+  // cookie-only (cross-origin scripts can't read the responses anyway).
+  if (server.method() != HTTP_GET && server.header("X-NixRoute") != "1") {
+    sendError(403, "forbidden");
+    return false;
+  }
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1279,7 +1285,7 @@ void handleModels() {
 
 void handleOptions() {
   server.sendHeader("Access-Control-Allow-Origin", "*");
-  server.sendHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+  server.sendHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, X-NixRoute");
   server.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   server.send(204, "", "");
 }
@@ -1394,6 +1400,16 @@ void handleChatRaw() {
       g_chatErrorCode = 503;
       g_headDone = true;
       return;
+    }
+    // Bound how long a slow or stalled client can pin the web task (anti-WDT
+    // / anti-DoS), and refuse absurd bodies up front instead of draining them.
+    server.client().setTimeout(20000);
+    if (server.hasHeader("Content-Length")) {
+      long cl = server.header("Content-Length").toInt();
+      if (cl > 0 && cl > (2L * 1024 * 1024)) {
+        server.client().stop();  // drop: not worth draining megabytes
+        return;
+      }
     }
     // Safe to start a fresh upload only now: discard stale bytes an aborted or
     // errored previous request may have left in the shared body pipe.
@@ -1993,8 +2009,8 @@ void setup() {
   server.on("/v1/models", HTTP_OPTIONS, handleOptions);
 
   server.onNotFound(handleNotFound);
-  const char* hk[] = {"Authorization", "Cookie", "Content-Length"};
-  server.collectHeaders(hk, 3);
+  const char* hk[] = {"Authorization", "Cookie", "Content-Length", "X-NixRoute"};
+  server.collectHeaders(hk, 4);
   server.begin();
   wsServer.begin();
 

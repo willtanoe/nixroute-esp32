@@ -35,6 +35,7 @@
 
 #define VERSION          "3.2.0"
 #define MAX_PROVIDERS    16
+#define MAX_TOKENS       5
 #define MAX_MODELS_CACHE 200
 #define MAX_USAGE_LOG    20
 #define MAX_USAGE_MODELS 32
@@ -95,7 +96,9 @@ struct ProxyJob {
 // transfer encoding — kept out to avoid dead code.)
 
 Preferences prefs;
-String g_wifiSsid, g_wifiPass, g_localToken, g_adminPass;
+String g_wifiSsid, g_wifiPass, g_adminPass;
+String g_tokens[MAX_TOKENS];
+int g_tokenCount = 0;
 Provider g_providers[MAX_PROVIDERS];
 int g_providerCount = 0;
 String g_providerModels[MAX_PROVIDERS];   // comma-separated raw model ids
@@ -146,12 +149,12 @@ String maskKey(const String& k) {
   return k.substring(0, 4) + "***" + k.substring(k.length() - 4);
 }
 
-String genToken(int len = 32) {
+String genToken() {
   static const char* cs = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
   String s;
-  s.reserve(len);
-  for (int i = 0; i < len; i++) s += cs[esp_random() % 62];
-  return "sk-local-" + s;
+  s.reserve(24);
+  for (int i = 0; i < 24; i++) s += cs[esp_random() % 62];
+  return "nx-" + s;
 }
 
 String slugify(const String& s) {
@@ -353,10 +356,28 @@ void loadConfig() {
   prefs.begin("gateway", true);
   g_wifiSsid = prefs.getString("wifi_ssid", "");
   g_wifiPass = prefs.getString("wifi_pass", "");
-  g_localToken = prefs.getString("local_token", "");
   g_adminPass = prefs.getString("admin_pass", "123456");
+  String tok = prefs.getString("local_tokens", "");
   prefs.end();
+  g_tokenCount = 0;
+  int start = 0;
+  while (start < (int)tok.length() && g_tokenCount < MAX_TOKENS) {
+    int comma = tok.indexOf(',', start);
+    String t = (comma < 0) ? tok.substring(start) : tok.substring(start, comma);
+    if (t.length()) g_tokens[g_tokenCount++] = t;
+    if (comma < 0) break;
+    start = comma + 1;
+  }
   loadProviders();
+}
+
+void saveTokens() {
+  String tok = "";
+  for (int i = 0; i < g_tokenCount; i++) {
+    if (i) tok += ",";
+    tok += g_tokens[i];
+  }
+  saveKey("local_tokens", tok);
 }
 
 void saveKey(const char* k, const String& v) {
@@ -455,14 +476,17 @@ bool isAuthenticated() {
 }
 
 bool authCheck() {
-  if (g_localToken.length() == 0) return true;
+  if (g_tokenCount == 0) return true;
   if (!server.hasHeader("Authorization")) return false;
   String h = server.header("Authorization");
-  String need = "Bearer " + g_localToken;
-  if (h.length() != need.length()) return false;
-  volatile int d = 0;
-  for (unsigned i = 0; i < h.length(); i++) d |= h[i] ^ need[i];
-  return d == 0;
+  for (int i = 0; i < g_tokenCount; i++) {
+    String need = "Bearer " + g_tokens[i];
+    if (h.length() != need.length()) continue;
+    volatile int d = 0;
+    for (unsigned j = 0; j < h.length(); j++) d |= h[j] ^ need[j];
+    if (d == 0) return true;
+  }
+  return false;
 }
 
 void sendJson(int code, const String& j) {
@@ -972,7 +996,7 @@ void handleHealth() {
   doc["requests_ok"] = g_reqOk;
   doc["requests_fail"] = g_reqFail;
   doc["avg_latency_ms"] = g_reqOk ? (g_latencySum / g_reqOk) : 0;
-  doc["local_token_set"] = g_localToken.length() > 0;
+  doc["local_token_set"] = g_tokenCount > 0;
   doc["providers"] = g_providerCount;
   doc["tokens"]["prompt"] = g_totalPrompt;
   doc["tokens"]["completion"] = g_totalCompletion;
@@ -1185,9 +1209,11 @@ void handleApiState() {
   doc["wifi"]["ap_mode"] = apMode;
   doc["wifi"]["ip"] = WiFi.localIP().toString();
   doc["wifi"]["rssi"] = WiFi.RSSI();
-  doc["token"]["set"] = g_localToken.length() > 0;
-  doc["token"]["full"] = g_localToken;
-  doc["token"]["masked"] = maskKey(g_localToken);
+  doc["token"]["set"] = g_tokenCount > 0;
+  doc["token"]["count"] = g_tokenCount;
+  doc["token"]["max"] = MAX_TOKENS;
+  JsonArray tokArr = doc["token"]["list"].to<JsonArray>();
+  for (int i = 0; i < g_tokenCount; i++) tokArr.add(g_tokens[i]);
   doc["stats"]["uptime_s"] = millis() / 1000;
   doc["stats"]["heap"] = ESP.getFreeHeap();
   doc["stats"]["heap_total"] = ESP.getHeapSize();
@@ -1405,21 +1431,42 @@ void handleApiReboot() {
 
 void handleApiTokenGenerate() {
   if (!requireAdmin()) return;
-  String t = genToken(32);
-  saveKey("local_token", t);
-  g_localToken = t;
+  if (g_tokenCount >= MAX_TOKENS) { sendError(409, "token limit reached (" + String(MAX_TOKENS) + ")"); return; }
+  String t = genToken();
+  g_tokens[g_tokenCount++] = t;
+  saveTokens();
   JsonDocument out;
   out["ok"] = true;
   out["token"] = t;
+  out["count"] = g_tokenCount;
   String s;
   serializeJson(out, s);
   sendJson(200, s);
 }
 
+void handleApiTokenDelete() {
+  if (!requireAdmin()) return;
+  JsonDocument doc;
+  deserializeJson(doc, server.arg("plain"));
+  String tok = doc["token"] | "";
+  tok.trim();
+  if (!tok.length()) { sendError(400, "token required"); return; }
+  for (int i = 0; i < g_tokenCount; i++) {
+    if (g_tokens[i] == tok) {
+      for (int j = i; j < g_tokenCount - 1; j++) g_tokens[j] = g_tokens[j + 1];
+      g_tokenCount--;
+      saveTokens();
+      sendJson(200, "{\"ok\":true}");
+      return;
+    }
+  }
+  sendError(404, "token not found");
+}
+
 void handleApiTokenClear() {
   if (!requireAdmin()) return;
-  saveKey("local_token", "");
-  g_localToken = "";
+  g_tokenCount = 0;
+  saveTokens();
   sendJson(200, "{\"ok\":true}");
 }
 
@@ -1529,9 +1576,9 @@ void setup() {
   Serial.printf("\n=== NixRoute v%s ===\n", VERSION);
   g_bootMs = millis();
   loadConfig();
-  Serial.printf("admin %s | token %s | wifi %s | providers %d\n",
+  Serial.printf("admin %s | tokens %d | wifi %s | providers %d\n",
                 g_adminPass.c_str(),
-                g_localToken.length() ? "set" : "open",
+                g_tokenCount,
                 g_wifiSsid.length() ? g_wifiSsid.c_str() : "(none)",
                 g_providerCount);
 
@@ -1580,6 +1627,7 @@ void setup() {
   server.on("/api/providers/ping", HTTP_POST, handleApiProviderPing);
   server.on("/api/reboot", HTTP_POST, handleApiReboot);
   server.on("/api/token/generate", HTTP_POST, handleApiTokenGenerate);
+  server.on("/api/token/delete", HTTP_POST, handleApiTokenDelete);
   server.on("/api/token/clear", HTTP_POST, handleApiTokenClear);
   server.on("/api/password", HTTP_POST, handleApiPassword);
   server.on("/api/wifi", HTTP_POST, handleApiWifi);

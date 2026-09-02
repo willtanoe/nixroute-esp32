@@ -261,10 +261,11 @@ td.ok{color:var(--ok)} td.danger{color:var(--danger)}
   <section class="view" id="v-settings">
     <div class="card form">
       <h2>Local API Token</h2>
-      <div class="kv" id="token-kv"></div>
+      <div class="desc">Up to 5 bearer tokens for client access. Empty list = open (no auth).</div>
+      <div id="token-list"></div>
       <div class="row" style="margin-top:14px">
-        <button class="btn" onclick="generateToken()">Generate Token</button>
-        <button class="btn ghost" onclick="clearToken()">Clear</button>
+        <button class="btn" id="token-create" onclick="generateToken()">Create Token</button>
+        <button class="btn ghost" onclick="clearToken()">Clear All</button>
       </div>
     </div>
     <div class="card form">
@@ -302,7 +303,7 @@ async function api(path,opts){opts=opts||{};var r=await fetch(path,opts);
   if(!r.ok)throw new Error((d.error&&d.error.message)||('HTTP '+r.status));return d}
 function post(path,body){return api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})})}
 function epUrl(){return S&&S.wifi.ip?('http://'+S.wifi.ip+'/v1'):''}
-function authHeaders(){var h={'Content-Type':'application/json'};if(S&&S.token.set)h['Authorization']='Bearer '+S.token.full;return h}
+function authHeaders(){var h={'Content-Type':'application/json'};if(S&&S.token.list&&S.token.list.length)h['Authorization']='Bearer '+S.token.list[0];return h}
 
 function show(v){
   document.querySelectorAll('.view').forEach(function(e){e.classList.remove('on')});
@@ -363,7 +364,7 @@ function renderOverview(){
 }
 
 function renderSnippets(){
-  var base=epUrl();var ip=S.wifi.ip||'<ip>';var tk=S.token.full||'<token>';
+  var base=epUrl();var ip=S.wifi.ip||'<ip>';var tk=(S.token.list&&S.token.list.length)?S.token.list[0]:'<token>';
   var snippets=[
     {tag:'Cursor', code:'"openai": {"baseURL": "'+base+'", "apiKey": "'+tk+'"}'},
     {tag:'Claude Code', code:'export OPENAI_BASE_URL='+base+' OPENAI_API_KEY='+tk},
@@ -559,16 +560,28 @@ async function removeProvider(id){
 
 /* ---------- Settings ---------- */
 function renderSettings(){
-  var tk=S.token;
-  document.getElementById('token-kv').innerHTML=
-    '<div class="item"><span class="lbl">Status</span><span class="val">'+(tk.set?'Enabled (Bearer required)':'Disabled (open)')+'</span></div>'+
-    '<div class="item"><span class="lbl">Token</span><span class="val">'+(tk.set?esc(tk.full):'—')+'</span></div>';
+  var tk=S.token||{};
+  var arr=tk.list||[];
+  var list=document.getElementById('token-list');
+  if(!arr.length){list.innerHTML='<div class="empty">No tokens. Client access is open (no auth).</div>'}
+  else{
+    var h='';
+    arr.forEach(function(t){
+      h+='<div class="snippet"><code>'+esc(t)+'</code><button class="btn ghost sm" onclick="copyText(this.parentNode.querySelector(\'code\').textContent)">Copy</button><button class="btn danger sm" onclick="deleteToken(\''+esc(t)+'\')">Delete</button></div>';
+    });
+    list.innerHTML=h;
+  }
+  var btn=document.getElementById('token-create');
+  btn.disabled=arr.length>=5;
+  btn.textContent=arr.length>=5?('Limit Reached ('+arr.length+'/5)'):'Create Token';
   document.getElementById('w-ssid').value=S.wifi.ssid||'';
   document.getElementById('w-pass').value='';
 }
 
-async function generateToken(){try{var r=await post('/api/token/generate');toast('Token generated','ok');await load()}catch(e){toast(e.message,'error')}}
-async function clearToken(){try{await post('/api/token/clear');toast('Token cleared','ok');await load()}catch(e){toast(e.message,'error')}}
+async function generateToken(){try{var r=await post('/api/token/generate');toast('Token created','ok');await load()}catch(e){toast(e.message,'error')}}
+async function deleteToken(tok){if(!confirm('Delete token "'+tok+'"?'))return;
+  try{await post('/api/token/delete',{token:tok});toast('Token deleted','ok');await load()}catch(e){toast(e.message,'error')}}
+async function clearToken(){try{await post('/api/token/clear');toast('All tokens cleared','ok');await load()}catch(e){toast(e.message,'error')}}
 async function saveWifi(){
   var s=document.getElementById('w-ssid').value.trim(),p=document.getElementById('w-pass').value;
   if(!s){toast('SSID required','error');return}

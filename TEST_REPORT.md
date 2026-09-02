@@ -31,6 +31,16 @@ original single provider / single API token are restored after every run.
      instead of 60 s.
   2. `nx/<unknown>/<model>` was forwarded to unrelated real providers. It now
      returns `404 unknown provider in model namespace`.
+- Follow-up fixes from the open-issues pass (commit `e546883`):
+  3. Downstream writes are now **bounded** (`sendBounded()`): every <=1400 B
+     chunk is gated on a 2.5 s `select()` writability check instead of relying
+     on `NetworkClient::write()`'s ~30×1 s retry loop.
+  4. A non-streaming body larger than available RAM was being **silently
+     truncated and returned as a successful 200**; it now fails cleanly with
+     `502`. (Prefer `stream: true` for large replies.)
+  5. `responseStarted` is set only when a response head is actually written.
+- The dashboard retries a transient `401` once before logging out (guard
+  against the rare WebServer header-parse hiccup on fresh connections).
 - One **open operational limit**: a client that disconnects mid a **very large
   synthetic stream** (~199 KB) can hold the single-flight slot ~30 s while the
   relay drains into the dead socket. Real LLM streams are far smaller and
@@ -59,7 +69,7 @@ original single provider / single API token are restored after every run.
 | 3 | Large prompts | 1 | — | ok | ok | 200 | n/a | 0 | upload streams; >2 MB → drop |
 | 4 | Large stream | 1 | — | 1.2 s, 199 436 B | ok | 200 | 125 KB | 0 | full relay + `[DONE]` |
 | 5 | Slow client | 1 | — | 1.5 s | ok | 200 | 118 KB | 0 | drip-read 512 B/10 ms |
-| 6 | Disconnect mid stream | 1 | — | — | partial | n/a | n/a | 0 | **slot held ~32 s** (see limits) |
+| 6 | Disconnect mid stream | 1 | — | — | partial | n/a | n/a | 0 | **small stream recovers ~2 s; huge (~199 KB) ~26 s** (see limits) |
 | 7 | Provider timeout (hang) | 1 | — | **13.3 s** | fail | **502** | 142 KB | 0 | recovery 200 after |
 | 8 | Provider 429 | 1 | — | 344 ms | fail→429 | **429** | — | 0 | |
 | 9 | Provider 5xx (500/503) | 1 | — | ~250 ms | fail→502 | **502** | — | 0 | |
@@ -110,22 +120,24 @@ original single provider / single API token are restored after every run.
 
 ## Open / suspected issues (need manual verification or future work)
 
-1. **Client disconnect during a large stream can hold the single-flight slot
-   for ~30 s** (measured with a synthetic ~199 KB stream). The relay keeps
-   writing into a dead socket until the TCP stack finally errors. Recommended
-   hardening: a bounded downstream write (non-blocking/send-timeout) so the
-   slot frees within a couple of seconds. Impact on real (small, token-paced)
-   LLM streams is expected to be far lower — to be confirmed manually.
-2. **Failover run showed 2 unexplained `502`s** out of 16 (dead-port provider +
-   live provider, real provider disabled). The remaining 14 were `200`,
-   proving connect-failure failover works; the two `502`s suggest a transient
-   where both candidates failed (timing/ordering). Needs a focused re-run.
+1. **Client disconnect during an extremely large synthetic stream (~199 KB)
+   can still hold the single-flight slot ~26 s** (measured, silent-dead peer
+   with no RST; TCP-level). The `sendBounded()` guard helps the RST/clear-fail
+   cases and keeps writes chunked, but a peer that silently stops ACKing is
+   only released by the TCP stack's own timeout. **Realistic small streams
+   recover in ~2 s** (measured). A full fix needs non-blocking sockets or an
+   lwIP send-timeout reconfiguration.
+2. ~~2 unexplained `502`s in one failover run~~ **Resolved**: connect-failure
+   failover is consistent (3 × 16/16 = 48/48 `200` when re-run sequentially).
+   The earlier `502`s were a cold-start/ordering transient right after the
+   temporary providers were added.
 3. **Admin `GET` cookie flake on one-shot TCP clients.** Under rapid
    fire-and-forget connections (each request = new TCP connection) an
    intermittent 401 was observed with a valid session (phantom `Content-Length`
    on a GET). Persistent keep-alive connections were stable (20/20) and the
-   browser dashboard uses keep-alive, so user impact is low; the root cause is
-   in the WebServer/lwIP accept+parse path, not the auth code.
+   dashboard uses keep-alive. Mitigation shipped: the dashboard retries a
+   transient 401 once. In a re-test, 30/30 one-shot GETs succeeded. Root cause
+   is in the WebServer/lwIP accept+parse path, not the auth code.
 4. Circuit-breaker cooldown (3 fails → 60 s) can hide a provider behind
    `503 … cooling down` right after real outages — expected behaviour, but it
    must be remembered when interpreting bursts of 503s.
@@ -168,15 +180,20 @@ python tools/loadtest/real_churn.py                          # real TLS churn
 
 ## Recommendations (priority order)
 
-1. **High** — Bound downstream writes during streaming (send timeout /
-   non-blocking + `connected()` checks) so a vanished client frees the
-   single-flight slot within ~2 s even for huge streams.
+1. **High (partial)** — Bound downstream writes during streaming. `sendBounded()`
+   (chunked, select-gated) is shipped; the residual case is a silent-dead peer
+   during an extremely large stream (~26 s), which needs non-blocking sockets /
+   lwIP send-timeout to fully close. Realistic streams already recover in ~2 s.
 2. **Medium** — If higher concurrency is required, remove the single-flight
    guard (per-request state + per-job body pipe) or queue instead of 503;
    otherwise document 503-backpressure semantics for clients.
-3. **Medium** — Re-run the failover matrix to explain the two transient `502`s
-   (ordering/timing).
-4. **Low** — Investigate the one-shot-connection admin `GET` flake at the
-   WebServer/lwIP accept layer (keep-alive unaffected).
+3. ~~Medium — Re-run the failover matrix~~ **Done**: 48/48 success across 3
+   sequential runs; earlier `502`s were a cold-start transient.
+4. **Low** — The rare one-shot-connection admin `GET` flake is mitigated by a
+   dashboard retry; a definitive fix belongs in the WebServer/lwIP accept
+   layer. Keep-alive clients are unaffected.
 5. **Low** — Surface circuit-breaker cooldown on the dashboard provider row
    (state already exposes `cooling`).
+6. **Low** — Non-streaming replies larger than free RAM now fail cleanly (502)
+   instead of truncating; consider raising usable RAM or auto-switching huge
+   replies to streaming.

@@ -137,6 +137,8 @@ void handleChat(){
   Serial.printf("chat model=%s code=%d heap=%d\n", model.c_str(), code, ESP.getFreeHeap());
 }
 void handleNotFound(){ sendJson(404,"{\"error\":{\"message\":\"not found\"}}"); }
+void handleFavicon(){ server.sendHeader("Cache-Control","max-age=86400"); server.send(200,"image/svg+xml",R"SVG(<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500"><rect x="70" y="70" width="92" height="375" rx="46" fill="#0c1a30"/><rect x="338" y="70" width="92" height="375" rx="46" fill="#0c1a30"/><line x1="125" y1="130" x2="375" y2="380" stroke="#0c1a30" stroke-width="96" stroke-linecap="round"/><line x1="125" y1="130" x2="375" y2="380" stroke="#fff" stroke-width="18" stroke-linecap="round"/><circle cx="125" cy="130" r="34" fill="#0c1a30" stroke="#fff" stroke-width="14"/><circle cx="125" cy="130" r="16" fill="#00a8b5"/><circle cx="250" cy="255" r="34" fill="#0c1a30" stroke="#fff" stroke-width="14"/><circle cx="250" cy="255" r="16" fill="#00a8b5"/><circle cx="375" cy="380" r="34" fill="#0c1a30" stroke="#fff" stroke-width="14"/><circle cx="375" cy="380" r="16" fill="#00a8b5"/></svg>)SVG"); }
+void handleNixrouteSvg(){ handleFavicon(); }
 
 // ---- Login ----
 void handleLogin(){
@@ -171,6 +173,11 @@ void handleLogout(){
 }
 
 // ---- Dashboard 9router-style ----
+String getActiveClass(const String& uri, const String& key){
+  if(key=="routes" && (uri=="/"||uri=="/dashboard"||uri=="/dashboard/endpoint")) return "on";
+  if(uri.indexOf(key)>=0) return "on";
+  return "";
+}
 void handleRoot(){
   if(!isAuthenticated()){
     server.sendHeader("Location","/login");
@@ -183,9 +190,11 @@ void handleRoot(){
   String dsMask=g_deepseekKey.length()?maskKey(g_deepseekKey):"kosong";
   String orMask=g_openrouterKey.length()?maskKey(g_openrouterKey):"kosong";
   String cuMask=g_customUrl.length()?(g_customUrl+" <code>"+maskKey(g_customKey)+"</code>"):"kosong";
-  String html = String(R"HTML(<!doctype html><html><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>NixRoute ESP32</title><style>
+  String html = String(R"HTML(<!doctype html><html><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>NixRoute ESP32 v1.0.0</title><link rel="icon" href="/favicon.svg"><style>
+*{scroll-behavior:smooth}
 *{box-sizing:border-box}body{margin:0;font-family:"IBM Plex Sans",system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--c-bg);color:var(--c-text)}
 :root{--c-bg:#f5f8fc;--c-surface:#ffffff;--c-surface-2:#f0f4f8;--c-border:#c7d3e0;--c-border-sub:#dde6ef;--c-text:#0c1a30;--c-muted:#52657d;--c-subtle:#7d8da2;--c-primary:#00a8b5;--c-primary-h:#008b97;--c-data-soft:#e8fbfc;--r:8px;--r-lg:12px;--sh:0 1px 2px rgba(12,26,48,.06);--sh-el:0 8px 24px rgba(12,26,48,.12)}
+.dark{--c-bg:#07111f;--c-surface:#0f2038;--c-surface-2:#152942;--c-border:#29435f;--c-border-sub:#1f3752;--c-text:#f4f8fc;--c-muted:#a9bacd;--c-subtle:#7489a2;--c-primary:#18bec9;--c-data-soft:#103943;}
 .shell{display:flex;min-height:100vh}
 .rail{width:72px;background:var(--c-surface);border-right:1px solid var(--c-border-sub);display:flex;flex-direction:column;align-items:center;padding:14px 0;gap:6px;position:sticky;top:0;height:100vh}
 .rail a{width:56px;height:56px;border-radius:12px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;font-size:10px;font-weight:600;letter-spacing:.2px;color:var(--c-muted);text-decoration:none}
@@ -210,14 +219,14 @@ void handleRoot(){
 .ok{color:#147a5b}.warn{color:#9a6817}
 @media(max-width:640px){.rail{display:none}}
 </style></head><body><div class=shell><aside class=rail>
-<a href="/" class=on><span style="width:28px;height:28px;display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 500 500" width="28" height="28"><rect x="70" y="70" width="92" height="375" rx="46" fill="#0c1a30"/><rect x="338" y="70" width="92" height="375" rx="46" fill="#0c1a30"/><line x1="125" y1="130" x2="375" y2="380" stroke="#0c1a30" stroke-width="96" stroke-linecap="round"/><line x1="125" y1="130" x2="375" y2="380" stroke="#fff" stroke-width="18" stroke-linecap="round"/><circle cx="125" cy="130" r="34" fill="#0c1a30" stroke="#fff" stroke-width="14"/><circle cx="125" cy="130" r="16" fill="#00a8b5"/><circle cx="250" cy="255" r="34" fill="#0c1a30" stroke="#fff" stroke-width="14"/><circle cx="250" cy="255" r="16" fill="#00a8b5"/><circle cx="375" cy="380" r="34" fill="#0c1a30" stroke="#fff" stroke-width="14"/><circle cx="375" cy="380" r="16" fill="#00a8b5"/></svg></span>Routes</a>
-<a href="#providers"><span>🗄️</span>Providers</a>
-<a href="#policies"><span>🧩</span>Policies</a>
-<a href="#observe"><span>📊</span>Observe</a>
-<a href="#tools"><span>🔧</span>Tools</a>
+<a href="/dashboard/endpoint" class=on><span style="width:28px;height:28px;display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 500 500" width="28" height="28"><rect x="70" y="70" width="92" height="375" rx="46" fill="#0c1a30"/><rect x="338" y="70" width="92" height="375" rx="46" fill="#0c1a30"/><line x1="125" y1="130" x2="375" y2="380" stroke="#0c1a30" stroke-width="96" stroke-linecap="round"/><line x1="125" y1="130" x2="375" y2="380" stroke="#fff" stroke-width="18" stroke-linecap="round"/><circle cx="125" cy="130" r="34" fill="#0c1a30" stroke="#fff" stroke-width="14"/><circle cx="125" cy="130" r="16" fill="#00a8b5"/><circle cx="250" cy="255" r="34" fill="#0c1a30" stroke="#fff" stroke-width="14"/><circle cx="250" cy="255" r="16" fill="#00a8b5"/><circle cx="375" cy="380" r="34" fill="#0c1a30" stroke="#fff" stroke-width="14"/><circle cx="375" cy="380" r="16" fill="#00a8b5"/></svg></span>Routes</a>
+<a href="/dashboard/providers"><span>🗄️</span>Providers</a>
+<a href="/dashboard/policies"><span>🧩</span>Policies</a>
+<a href="/dashboard/usage"><span>📊</span>Observe</a>
+<a href="/dashboard/tools"><span>🔧</span>Tools</a>
 <div style="flex:1"></div>
 <a href="/admin/logout" style="color:#888;font-size:10px">Logout</a>
-</aside><div class=main><div class=header><div class=logo>NixRoute ESP32 <span style="font-weight:400;color:#666">— SuprimX · nixroute 0.5.59</span></div><div style="font-size:12px;color:#666">)HTML") + ip + R"HTML(</div></div><div class=wrap>)HTML"
+</aside><div class=main><div class=header><div class=logo>NixRoute ESP32 <span style="font-weight:400;color:#666">— SuprimX · nixroute 1.0.0</span></div><div style="font-size:12px;color:#666">)HTML") + ip + R"HTML(</div></div><div class=wrap>)HTML"
   + "<div class=card id=\"routes\"><h2>◉ API Endpoint — Routes</h2>"
   + "<div class=row><span class='badge on'>Local</span><div class=mono>http://"+ip+"/v1</div><button class='btn ghost' onclick=\"navigator.clipboard.writeText('http://"+ip+"/v1')\">Copy</button></div>"
   + "<div class=row><span class=badge>WiFi</span><div class=mono>"+(conn?ip+" · RSSI "+WiFi.RSSI()+"dBm":"disconnected")+"</div><span class='small "+(conn?"ok":"warn")+"'>"+(conn?"connected":"disconnected")+"</span></div>"
@@ -252,7 +261,8 @@ void handleRoot(){
   + "<div class=small>GET <code>/health</code> · <code>GET /v1/models</code> · <code>POST /v1/chat/completions</code> · <code>GET /admin/status</code></div>"
   + "</div>"
 
-  + "</div></body></html>";
+  + "<script>try{if(localStorage.getItem(\"nixroute-theme\")==\"dark\"||(!localStorage.getItem(\"nixroute-theme\")&&matchMedia(\"(prefers-color-scheme:dark)\").matches))document.documentElement.classList.add(\"dark\")}catch(e){}</script>"
+  + "</div></div></body></html>";
   server.sendHeader("Cache-Control","no-store");
   server.send(200,"text/html",html);
 }
@@ -275,7 +285,7 @@ void handlePasswordPost(){
 
 void setup(){
   Serial.begin(115200); delay(300);
-  Serial.println("\n=== ESP32 Router — 9router-style ===");
+  Serial.println("\n=== NixRoute ESP32 v1.0.0 ===");
   loadConfig();
   Serial.printf("admin %s local %s ds %s or %s custom %s\n", g_adminPass.c_str(), g_localToken.length()?"set":"open", g_deepseekKey.length()?"set":"-", g_openrouterKey.length()?"set":"-", g_customUrl.c_str());
   WiFi.mode(WIFI_STA); WiFi.begin(WIFI_SSID, WIFI_PASS);
@@ -284,7 +294,15 @@ void setup(){
   if(WiFi.status()==WL_CONNECTED) Serial.printf("\nWiFi OK IP %s RSSI %d heap %d\n", WiFi.localIP().toString().c_str(), WiFi.RSSI(), ESP.getFreeHeap());
   else Serial.printf("\nWiFi FAIL %d\n", WiFi.status());
 
+  server.on("/favicon.svg", HTTP_GET, handleFavicon);
+  server.on("/nixroute.svg", HTTP_GET, handleNixrouteSvg);
   server.on("/", HTTP_GET, handleRoot);
+  server.on("/dashboard", HTTP_GET, handleRoot);
+  server.on("/dashboard/endpoint", HTTP_GET, handleRoot);
+  server.on("/dashboard/providers", HTTP_GET, handleRoot);
+  server.on("/dashboard/policies", HTTP_GET, handleRoot);
+  server.on("/dashboard/usage", HTTP_GET, handleRoot);
+  server.on("/dashboard/tools", HTTP_GET, handleRoot);
   server.on("/login", HTTP_GET, handleLogin);
   server.on("/admin/login", HTTP_POST, handleLoginPost);
   server.on("/admin/logout", HTTP_GET, handleLogout);

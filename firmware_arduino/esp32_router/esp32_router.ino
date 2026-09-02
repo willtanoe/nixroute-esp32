@@ -1816,24 +1816,61 @@ void handleApiWifi() {
 // Auth pages (login / logout)
 // ---------------------------------------------------------------------------
 void handleLogin() {
-  String html = R"HTML(<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 500 500'%3E%3Crect x='70' y='70' width='92' height='375' rx='46' fill='%230c1a30'/%3E%3Crect x='338' y='70' width='92' height='375' rx='46' fill='%230c1a30'/%3E%3Cline x1='125' y1='130' x2='375' y2='380' stroke='%230c1a30' stroke-width='96' stroke-linecap='round'/%3E%3Cline x1='125' y1='130' x2='375' y2='380' stroke='%23ffffff' stroke-width='18' stroke-linecap='round'/%3E%3Ccircle cx='125' cy='130' r='34' fill='%230c1a30' stroke='%23ffffff' stroke-width='14'/%3E%3Ccircle cx='125' cy='130' r='16' fill='%2300a8b5'/%3E%3Ccircle cx='250' cy='255' r='34' fill='%230c1a30' stroke='%23ffffff' stroke-width='14'/%3E%3Ccircle cx='250' cy='255' r='16' fill='%2300a8b5'/%3E%3Ccircle cx='375' cy='380' r='34' fill='%230c1a30' stroke='%23ffffff' stroke-width='14'/%3E%3Ccircle cx='375' cy='380' r='16' fill='%2300a8b5'/%3E%3C/svg%3E"><title>Login — NixRoute</title><style>
-:root{--bg:#0f172a;--surface:#1e293b;--border:#334155;--text:#e2e8f0;--muted:#94a3b8;--accent:#00a8b5;--accent-h:#14c1cf}
-*{box-sizing:border-box}body{margin:0;font-family:ui-sans-serif,system-ui,sans-serif;background:var(--bg);color:var(--text);display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}
-.card{width:100%;max-width:360px;background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:32px}
-.logo{display:flex;align-items:center;gap:12px;margin-bottom:6px}
-.logo svg{width:40px;height:40px;flex-shrink:0}
-h1{font-size:18px;font-weight:700;margin:0}.sub{font-size:13px;color:var(--muted);margin:4px 0 24px}
-label{font-size:12px;font-weight:600;display:block;margin:14px 0 6px}
-input{width:100%;padding:11px 12px;border:1px solid var(--border);border-radius:10px;font-size:14px;background:#0d1526;color:var(--text);outline:none}
-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(0,168,181,.2)}
-button{width:100%;padding:11px;border-radius:10px;border:0;background:var(--accent);color:#fff;font-weight:600;font-size:14px;cursor:pointer;margin-top:18px}
-button:hover{background:var(--accent-h)}
-.hint{font-size:11px;color:var(--muted);margin-top:14px;text-align:center}
-code{background:#0d1526;border:1px solid var(--border);padding:1px 6px;border-radius:6px;font-size:11px}
-</style></head><body><div class="card"><div class="logo"><svg viewBox="0 0 500 500" xmlns="http://www.w3.org/2000/svg"><rect x="70" y="70" width="92" height="375" rx="46" fill="#0c1a30"/><rect x="338" y="70" width="92" height="375" rx="46" fill="#0c1a30"/><path d="M416 85l26-26m0 0h-24m24 0v24" fill="none" stroke="#0c1a30" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/><line x1="125" y1="130" x2="375" y2="380" stroke="#0c1a30" stroke-width="96" stroke-linecap="round"/><line x1="125" y1="130" x2="375" y2="380" stroke="#ffffff" stroke-width="18" stroke-linecap="round"/><circle cx="125" cy="130" r="34" fill="#0c1a30" stroke="#ffffff" stroke-width="14"/><circle cx="125" cy="130" r="16" fill="#00a8b5"/><circle cx="250" cy="255" r="34" fill="#0c1a30" stroke="#ffffff" stroke-width="14"/><circle cx="250" cy="255" r="16" fill="#00a8b5"/><circle cx="375" cy="380" r="34" fill="#0c1a30" stroke="#ffffff" stroke-width="14"/><circle cx="375" cy="380" r="16" fill="#00a8b5"/></svg><div><h1>NixRoute</h1><div class="sub">ESP32 API Gateway</div></div></div>
-<form method="POST" action="/admin/login"><label>Password</label><input name="password" type="password" placeholder="••••••" required autofocus><button>Sign In</button></form>
-<p style="text-align:center;font-size:13px;color:var(--muted);margin:16px 0 0">Sign in to the dashboard. Default password <code>123456</code>.</p>
-<p class="hint">Change the password in Settings after login.</p></div></body></html>)HTML";
+  String html = R"HTML(<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 500 500'%3E%3Crect x='70' y='70' width='92' height='375' rx='46' fill='%230c1a30'/%3E%3Crect x='338' y='70' width='92' height='375' rx='46' fill='%230c1a30'/%3E%3Cline x1='125' y1='130' x2='375' y2='380' stroke='%230c1a30' stroke-width='96' stroke-linecap='round'/%3E%3Cline x1='125' y1='130' x2='375' y2='380' stroke='%23ffffff' stroke-width='18' stroke-linecap='round'/%3E%3Ccircle cx='125' cy='130' r='34' fill='%230c1a30' stroke='%23ffffff' stroke-width='14'/%3E%3Ccircle cx='125' cy='130' r='16' fill='%2300a8b5'/%3E%3Ccircle cx='250' cy='255' r='34' fill='%230c1a30' stroke='%23ffffff' stroke-width='14'/%3E%3Ccircle cx='250' cy='255' r='16' fill='%2300a8b5'/%3E%3Ccircle cx='375' cy='380' r='34' fill='%230c1a30' stroke='%23ffffff' stroke-width='14'/%3E%3Ccircle cx='375' cy='380' r='16' fill='%2300a8b5'/%3E%3C/svg%3E">
+<title>NixRoute — Sign in</title>
+<style>
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;font-family:ui-sans-serif,system-ui,-apple-system,"SF Pro Display","Segoe UI",Roboto,sans-serif;color:#eef3ff;
+ display:grid;place-items:center;overflow:hidden;padding:20px;
+ background:radial-gradient(1200px 720px at 88% -12%,rgba(92,112,190,.32),transparent 62%),
+   radial-gradient(900px 620px at -10% 18%,rgba(0,168,181,.20),transparent 55%),
+   radial-gradient(820px 620px at 50% 118%,rgba(108,66,196,.18),transparent 60%),
+   linear-gradient(180deg,#0c1126 0%,#080d1b 55%,#05070f 100%)}
+.orb{position:fixed;border-radius:50%;filter:blur(80px);pointer-events:none;opacity:.5}
+.orb.a{width:440px;height:440px;background:rgba(47,211,222,.20);top:-140px;right:-80px}
+.orb.b{width:380px;height:380px;background:rgba(108,120,255,.20);bottom:-150px;left:-90px}
+.card{position:relative;z-index:1;width:min(92vw,420px);padding:42px 38px 30px;border-radius:30px;
+ background:linear-gradient(180deg,rgba(255,255,255,.095),rgba(255,255,255,.04));
+ border:1px solid rgba(255,255,255,.14);
+ -webkit-backdrop-filter:blur(40px) saturate(180%);backdrop-filter:blur(40px) saturate(180%);
+ box-shadow:0 34px 90px rgba(2,6,20,.55),inset 0 1px 0 rgba(255,255,255,.16),inset 0 -1px 0 rgba(255,255,255,.04)}
+.brand{display:flex;align-items:center;gap:14px;margin-bottom:10px}
+.brand svg{width:46px;height:46px;flex:0 0 auto;filter:drop-shadow(0 8px 18px rgba(0,168,181,.35))}
+h1{margin:0;font-size:21px;font-weight:700;letter-spacing:-.01em}
+.sub{font-size:12.5px;color:#9fb0cf;margin-top:3px}
+label{display:block;font-size:12px;font-weight:600;color:#a9b6d2;letter-spacing:.02em;margin:24px 0 9px}
+input{width:100%;padding:14px 16px;border-radius:14px;border:1px solid rgba(255,255,255,.16);
+ background:rgba(10,14,30,.45);color:#eef3ff;font-size:15px;outline:none;-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);
+ transition:border-color .15s,box-shadow .15s}
+input::placeholder{color:#6d7c9c}
+input:focus{border-color:rgba(47,211,222,.7);box-shadow:0 0 0 4px rgba(47,211,222,.18)}
+button{width:100%;margin-top:24px;padding:14px;border:0;border-radius:14px;cursor:pointer;
+ font-size:15px;font-weight:700;color:#03141a;letter-spacing:.01em;
+ background:linear-gradient(180deg,#4ae4ee,#00b7c4);
+ box-shadow:0 12px 30px rgba(0,168,181,.38),inset 0 1px 0 rgba(255,255,255,.55)}
+button:hover{filter:brightness(1.07)}
+button:active{transform:scale(.985)}
+.hint{font-size:12px;color:#7e8cb0;line-height:1.6;margin:26px 0 0;text-align:center}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;color:#cfe6e8;
+ background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12);padding:1px 7px;border-radius:8px}
+a{color:#3fd9e4;text-decoration:none}
+@media (prefers-reduced-motion:no-preference){.card{animation:pop .45s cubic-bezier(.18,.9,.28,1.2)}}
+@keyframes pop{from{opacity:0;transform:translateY(16px) scale(.975)}to{opacity:1;transform:none}}
+</style></head>
+<body>
+<div class="orb a"></div><div class="orb b"></div>
+<div class="card">
+ <div class="brand"><svg viewBox="0 0 500 500" xmlns="http://www.w3.org/2000/svg"><rect x="70" y="70" width="92" height="375" rx="46" fill="#0c1a30"/><rect x="338" y="70" width="92" height="375" rx="46" fill="#0c1a30"/><path d="M416 85l26-26m0 0h-24m24 0v24" fill="none" stroke="#0c1a30" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/><line x1="125" y1="130" x2="375" y2="380" stroke="#0c1a30" stroke-width="96" stroke-linecap="round"/><line x1="125" y1="130" x2="375" y2="380" stroke="#ffffff" stroke-width="18" stroke-linecap="round"/><circle cx="125" cy="130" r="34" fill="#0c1a30" stroke="#ffffff" stroke-width="14"/><circle cx="125" cy="130" r="16" fill="#00a8b5"/><circle cx="250" cy="255" r="34" fill="#0c1a30" stroke="#ffffff" stroke-width="14"/><circle cx="250" cy="255" r="16" fill="#00a8b5"/><circle cx="375" cy="380" r="34" fill="#0c1a30" stroke="#ffffff" stroke-width="14"/><circle cx="375" cy="380" r="16" fill="#00a8b5"/></svg><div><h1>NixRoute</h1><div class="sub">ESP32 AI Gateway</div></div></div>
+ <form method="POST" action="/admin/login">
+  <label for="pw">Password</label>
+  <input id="pw" name="password" type="password" placeholder="••••••" autocomplete="current-password" required autofocus>
+  <button>Sign In</button>
+ </form>
+ <p class="hint">Sign in to the dashboard. Default password <code>123456</code> — change it in Settings after signing in.</p>
+</div>
+</body></html>)HTML";
   server.send(200, "text/html", html);
 }
 

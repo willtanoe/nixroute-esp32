@@ -33,10 +33,10 @@
 #include "mbedtls/md.h"
 #include "dashboard_html.h"
 
-#define VERSION          "3.2.0"
+#define VERSION          "3.2.1"
 #define MAX_PROVIDERS    16
 #define MAX_TOKENS       5
-#define MAX_MODELS_CACHE 200
+#define MAX_MODELS_CACHE 50
 #define MAX_USAGE_LOG    20
 #define MAX_USAGE_MODELS 32
 #define PROXY_QUEUE_LEN  4
@@ -691,10 +691,14 @@ String readBodyManual(WiFiClientSecure& client, bool chunked, size_t contentLeng
       remaining -= r;
     }
   } else {
-    while (client.available()) {
-      int r = client.read(buf, sizeof(buf));
-      if (r <= 0) break;
-      body.concat((const char*)buf, (unsigned)r);
+    while (client.connected() || client.available()) {
+      if (client.available()) {
+        int r = client.read(buf, sizeof(buf));
+        if (r <= 0) break;
+        body.concat((const char*)buf, (unsigned)r);
+      } else {
+        delay(1);
+      }
     }
   }
   return body;
@@ -750,7 +754,7 @@ void streamResponseManual(WiFiClientSecure& client, bool chunked, size_t content
 // ---------------------------------------------------------------------------
 // Proxy engine (runs on Core 1)
 // ---------------------------------------------------------------------------
-int doUpstream(const ProviderSnap& p, bool isStream, volatile bool* bodyDone,
+int doUpstream(const ProviderSnap& p, bool isStream, volatile bool* bodyDone, size_t reqContentLength,
                NetworkClient& c, const String& fullModel, uint32_t& outTokens) {
   outTokens = 0;
   String host;
@@ -767,7 +771,7 @@ int doUpstream(const ProviderSnap& p, bool isStream, volatile bool* bodyDone,
     return 0;
   }
 
-  // request headers (chunked upload — length-independent, trimmer-friendly)
+  // request headers (exact Content-Length)
   client.printf("POST %s HTTP/1.1\r\n", path.c_str());
   client.printf("Host: %s\r\n", host.c_str());
   client.print("Content-Type: application/json\r\n");
@@ -781,34 +785,24 @@ int doUpstream(const ProviderSnap& p, bool isStream, volatile bool* bodyDone,
     client.print("HTTP-Referer: http://" + WiFi.localIP().toString() + "\r\n");
     client.print("X-Title: NixRoute\r\n");
   }
-  client.print("Transfer-Encoding: chunked\r\n");
+  client.printf("Content-Length: %d\r\n", reqContentLength);
   client.print("Connection: close\r\n\r\n");
 
-  // stream the request body (trimmed) as chunked
-  TokenTrimmer trimmer;
+  // stream the request body directly
   uint8_t buf[1024];
-  String out;
-  out.reserve(1024);
-  while (true) {
-    size_t r = xStreamBufferReceive(g_bodyStream, buf, sizeof(buf), pdMS_TO_TICKS(200));
+  size_t remaining = reqContentLength;
+  while (remaining > 0) {
+    size_t want = remaining > sizeof(buf) ? sizeof(buf) : remaining;
+    size_t r = xStreamBufferReceive(g_bodyStream, buf, want, pdMS_TO_TICKS(200));
     if (r > 0) {
-      trimmer.trim(buf, r, out);
-      if (out.length() >= 512) {
-        client.printf("%x\r\n", (unsigned)out.length());
-        client.write((const uint8_t*)out.c_str(), out.length());
-        client.print("\r\n");
-        out = "";
-      }
+      client.write(buf, r);
+      remaining -= r;
     } else if (bodyDone && *bodyDone) {
+      // client body finished but we didn't receive enough bytes? Wait, the length must match.
+      // If we break early, we might send an incomplete request.
       break;
     }
   }
-  if (out.length()) {
-    client.printf("%x\r\n", (unsigned)out.length());
-    client.write((const uint8_t*)out.c_str(), out.length());
-    client.print("\r\n");
-  }
-  client.print("0\r\n\r\n");
 
   // read response
   bool chunked;
@@ -849,7 +843,7 @@ void processProxyJob(ProxyJob* job) {
   for (int k = 0; k < job->n; k++) {
     const ProviderSnap& p = job->providers[(start + k) % job->n];
     String fullModel = p.id + "/" + job->upstreamModel;
-    int code = doUpstream(p, job->isStream, &job->bodyDone, c, fullModel, tokens);
+    int code = doUpstream(p, job->isStream, &job->bodyDone, job->contentLength, c, fullModel, tokens);
     lastCode = code;
     if (code >= 200 && code < 300) { ok = true; break; }
     // Only fail over when the connection failed before the body was consumed

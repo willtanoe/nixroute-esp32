@@ -1,7 +1,7 @@
-# ESP32-WROOM-32 AI API Router
+# NixRoute ESP32 — ESP32-WROOM-32 AI API Router
 
-> **Standalone embedded AI API gateway on ESP32-WROOM-32 (520 KB SRAM, 4 MB flash, no PSRAM).**
-> OpenAI-compatible `POST /v1/chat/completions` router — point your OpenAI SDK at `http://<esp32-ip>/v1`.
+> **NixRoute ESP32 — Standalone embedded AI API gateway on ESP32-WROOM-32 (520 KB SRAM, 4 MB flash, no PSRAM).**
+> OpenAI-compatible `POST /v1/chat/completions` router — point your OpenAI SDK at `http://<esp32-ip>/v1`. Fork-inspired UI from `D:\nixroute` (NixRoute 0.5.59).
 
 ```
 curl / Python OpenAI SDK / Claude Code / OpenCode

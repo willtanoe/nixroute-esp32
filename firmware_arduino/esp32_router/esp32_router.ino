@@ -760,6 +760,7 @@ int doUpstream(const ProviderSnap& p, bool isStream, volatile bool* bodyDone,
   unsigned long t0 = millis();
   WiFiClientSecure client;
   client.setInsecure();
+  client.setTimeout(60000);  // LLM responses can take many seconds
   if (!client.connect(host.c_str(), port)) {
     bumpMetrics(p.id, false, 0, 0);
     recordUsage(fullModel.c_str(), 0, 0, 0, 0, false);
@@ -849,8 +850,8 @@ void processProxyJob(ProxyJob* job) {
     const ProviderSnap& p = job->providers[(start + k) % job->n];
     String fullModel = p.id + "/" + job->upstreamModel;
     int code = doUpstream(p, job->isStream, &job->bodyDone, c, fullModel, tokens);
-    if (code >= 200 && code < 300) { ok = true; break; }
     lastCode = code;
+    if (code >= 200 && code < 300) { ok = true; break; }
     // Only fail over when the connection failed before the body was consumed
     // (code <= 0). A 4xx/5xx response means the body was already streamed.
     if (code <= 0) continue;

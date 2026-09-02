@@ -1,10 +1,10 @@
 // ESP32 Router — AI API Gateway ("9Router") for DOIT ESP32 DEVKIT V1
-// OpenAI-compatible gateway with smart failover, model aliasing, round-robin
-// multi-provider routing, and per-provider metrics.
+// OpenAI-compatible gateway with smart failover, round-robin multi-provider
+// routing, per-provider metrics, and token usage tracking.
 //
 //   POST /v1/chat/completions   (streaming + non-streaming proxy)
-//   GET  /v1/models             (virtual aliases + provider models)
-//   GET  /health                (device + provider status)
+//   GET  /v1/models             (provider models)
+//   GET  /health                (device + provider status + usage)
 //   GET  /                      (dashboard SPA from dashboard_html.h)
 //
 // Memory-safe: 8 KB request cap (413), chunked SSE passthrough (no full-body
@@ -19,11 +19,12 @@
 #include <esp_random.h>
 #include "dashboard_html.h"
 
-#define VERSION          "3.0.0"
+#define VERSION          "3.1.0"
 #define MAX_PROVIDERS    16
-#define MAX_ALIASES      32
 #define MAX_MODELS_CACHE 200
 #define MAX_BODY         8192
+#define MAX_USAGE_LOG    20
+#define MAX_USAGE_MODELS 32
 
 // ---------------------------------------------------------------------------
 // Data model
@@ -42,10 +43,19 @@ struct Provider {
   Metrics m;
 };
 
-struct Alias {
-  String name;      // virtual name e.g. "fast"
-  String provider;  // target provider id
-  String model;     // physical model on that provider
+struct UsageEntry {
+  char model[48];
+  uint32_t promptTokens;
+  uint32_t completionTokens;
+  uint32_t totalTokens;
+  uint32_t latencyMs;
+  bool ok;
+};
+
+struct ModelUsage {
+  char model[48];
+  uint32_t requests;
+  uint32_t tokens;
 };
 
 Preferences prefs;
@@ -53,14 +63,20 @@ String g_wifiSsid, g_wifiPass, g_localToken, g_adminPass;
 Provider g_providers[MAX_PROVIDERS];
 int g_providerCount = 0;
 String g_providerModels[MAX_PROVIDERS];   // comma-separated raw model ids
-Alias g_aliases[MAX_ALIASES];
-int g_aliasCount = 0;
 WebServer server(80);
 uint32_t g_reqTotal = 0, g_reqOk = 0, g_reqFail = 0;
 uint32_t g_latencySum = 0;
 uint32_t g_rr = 0;                         // round-robin cursor
 unsigned long g_bootMs = 0;
 String g_lastFetchError;
+
+// usage tracking
+uint32_t g_totalPrompt = 0, g_totalCompletion = 0, g_totalTokens = 0;
+UsageEntry g_usageLog[MAX_USAGE_LOG];
+int g_usageWrite = 0;
+int g_usageCount = 0;
+ModelUsage g_modelUsage[MAX_USAGE_MODELS];
+int g_modelUsageCount = 0;
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -108,9 +124,57 @@ int findProvider(const String& id) {
   return -1;
 }
 
-int findAlias(const String& name) {
-  for (int i = 0; i < g_aliasCount; i++) if (g_aliases[i].name == name) return i;
-  return -1;
+// ---------------------------------------------------------------------------
+// Usage tracking
+// ---------------------------------------------------------------------------
+void recordUsage(const char* model, uint32_t pt, uint32_t ct, uint32_t tt,
+                 uint32_t lat, bool ok) {
+  UsageEntry& e = g_usageLog[g_usageWrite];
+  strncpy(e.model, model, sizeof(e.model) - 1);
+  e.model[sizeof(e.model) - 1] = 0;
+  e.promptTokens = pt;
+  e.completionTokens = ct;
+  e.totalTokens = tt;
+  e.latencyMs = lat;
+  e.ok = ok;
+  g_usageWrite = (g_usageWrite + 1) % MAX_USAGE_LOG;
+  if (g_usageCount < MAX_USAGE_LOG) g_usageCount++;
+
+  if (ok && tt > 0) {
+    g_totalPrompt += pt;
+    g_totalCompletion += ct;
+    g_totalTokens += tt;
+    for (int i = 0; i < g_modelUsageCount; i++) {
+      if (strcmp(g_modelUsage[i].model, model) == 0) {
+        g_modelUsage[i].requests++;
+        g_modelUsage[i].tokens += tt;
+        return;
+      }
+    }
+    if (g_modelUsageCount < MAX_USAGE_MODELS) {
+      ModelUsage& m = g_modelUsage[g_modelUsageCount++];
+      strncpy(m.model, model, sizeof(m.model) - 1);
+      m.model[sizeof(m.model) - 1] = 0;
+      m.requests = 1;
+      m.tokens = tt;
+    }
+  }
+}
+
+// Extract usage from a JSON (or SSE tail) string. Returns true if found.
+bool parseUsage(const String& s, uint32_t& pt, uint32_t& ct, uint32_t& tt) {
+  int u = s.indexOf("\"usage\"");
+  if (u < 0) return false;
+  int brace = s.indexOf('{', u);
+  if (brace < 0) return false;
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, s.substring(brace));
+  if (err) return false;
+  pt = doc["prompt_tokens"] | 0;
+  ct = doc["completion_tokens"] | 0;
+  tt = doc["total_tokens"] | 0;
+  if (!tt && (pt || ct)) tt = pt + ct;
+  return tt > 0 || pt > 0 || ct > 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -131,22 +195,6 @@ void saveProviders() {
   serializeJson(doc, raw);
   prefs.begin("gateway", false);
   prefs.putString("providers", raw);
-  prefs.end();
-}
-
-void saveAliases() {
-  JsonDocument doc;
-  JsonArray arr = doc.to<JsonArray>();
-  for (int i = 0; i < g_aliasCount; i++) {
-    JsonObject o = arr.add<JsonObject>();
-    o["name"] = g_aliases[i].name;
-    o["provider"] = g_aliases[i].provider;
-    o["model"] = g_aliases[i].model;
-  }
-  String raw;
-  serializeJson(doc, raw);
-  prefs.begin("gateway", false);
-  prefs.putString("aliases", raw);
   prefs.end();
 }
 
@@ -171,8 +219,7 @@ void loadProviders() {
       }
     }
   }
-  // auto-heal: regenerate any id that drifted from slugify(name) (e.g. the
-  // old tolower(int) bug that stored ASCII decimal codes instead of chars).
+  // auto-heal: regenerate any id that drifted from slugify(name)
   bool healed = false;
   for (int i = 0; i < g_providerCount; i++) {
     String sid = slugify(g_providers[i].name);
@@ -190,27 +237,6 @@ void loadProviders() {
   }
 }
 
-void loadAliases() {
-  prefs.begin("gateway", true);
-  String raw = prefs.getString("aliases", "");
-  prefs.end();
-  g_aliasCount = 0;
-  if (raw.length()) {
-    JsonDocument doc;
-    if (!deserializeJson(doc, raw)) {
-      JsonArray arr = doc.as<JsonArray>();
-      for (JsonVariant v : arr) {
-        if (g_aliasCount >= MAX_ALIASES) break;
-        Alias& a = g_aliases[g_aliasCount++];
-        JsonObject o = v.as<JsonObject>();
-        a.name = o["name"] | "";
-        a.provider = o["provider"] | "";
-        a.model = o["model"] | "";
-      }
-    }
-  }
-}
-
 void loadConfig() {
   prefs.begin("gateway", true);
   g_wifiSsid = prefs.getString("wifi_ssid", "");
@@ -219,7 +245,6 @@ void loadConfig() {
   g_adminPass = prefs.getString("admin_pass", "123456");
   prefs.end();
   loadProviders();
-  loadAliases();
 }
 
 void saveKey(const char* k, const String& v) {
@@ -358,18 +383,7 @@ bool requireAdmin() {
 int resolveCandidates(const String& model, int* candidates, String* upstreamModel) {
   if (upstreamModel) *upstreamModel = model;
 
-  // 1. virtual alias
-  int ai = findAlias(model);
-  if (ai >= 0) {
-    int idx = findProvider(g_aliases[ai].provider);
-    if (idx >= 0 && g_providers[idx].active) {
-      candidates[0] = idx;
-      if (upstreamModel) *upstreamModel = g_aliases[ai].model;
-      return 1;
-    }
-  }
-
-  // 2. explicit "<provider>/<model>" namespace
+  // 1. explicit "<provider>/<model>" namespace
   int slash = model.indexOf('/');
   if (slash > 0) {
     String prefix = model.substring(0, slash);
@@ -381,13 +395,13 @@ int resolveCandidates(const String& model, int* candidates, String* upstreamMode
     }
   }
 
-  // 3. exact match across providers (round-robin among matches)
+  // 2. exact match across providers (round-robin among matches)
   int n = 0;
   for (int i = 0; i < g_providerCount; i++)
     if (g_providers[i].active && modelInProvider(i, model)) candidates[n++] = i;
   if (n) { if (upstreamModel) *upstreamModel = model; return n; }
 
-  // 4. "<provider>-" prefix
+  // 3. "<provider>-" prefix
   for (int i = 0; i < g_providerCount; i++) {
     String p = g_providers[i].id + "-";
     if (model.startsWith(p)) {
@@ -399,7 +413,7 @@ int resolveCandidates(const String& model, int* candidates, String* upstreamMode
     }
   }
 
-  // 5. fallback: all active providers that have a key
+  // 4. fallback: all active providers that have a key
   n = 0;
   for (int i = 0; i < g_providerCount; i++)
     if (g_providers[i].active && g_providers[i].key.length()) candidates[n++] = i;
@@ -427,6 +441,9 @@ void handleHealth() {
   doc["avg_latency_ms"] = g_reqOk ? (g_latencySum / g_reqOk) : 0;
   doc["local_token_set"] = g_localToken.length() > 0;
   doc["providers"] = g_providerCount;
+  doc["tokens"]["prompt"] = g_totalPrompt;
+  doc["tokens"]["completion"] = g_totalCompletion;
+  doc["tokens"]["total"] = g_totalTokens;
 
   JsonArray provs = doc["provider_metrics"].to<JsonArray>();
   for (int i = 0; i < g_providerCount; i++) {
@@ -451,15 +468,6 @@ void handleModels() {
   root["object"] = "list";
   JsonArray data = root["data"].to<JsonArray>();
 
-  // virtual aliases first
-  for (int i = 0; i < g_aliasCount; i++) {
-    JsonObject mo = data.add<JsonObject>();
-    mo["id"] = g_aliases[i].name;
-    mo["object"] = "model";
-    mo["owned_by"] = "alias";
-  }
-
-  // provider models (namespaced "<provider>/<model>")
   for (int i = 0; i < g_providerCount; i++) {
     if (!g_providers[i].active) continue;
     String l = g_providerModels[i];
@@ -494,47 +502,58 @@ void handleOptions() {
   server.send(204, "", "");
 }
 
-// Stream the upstream response body directly to the client (chunked SSE).
-void streamResponse(HTTPClient& http) {
+// Stream the upstream response body directly to the client (chunked SSE),
+// while capturing the trailing data to extract token usage.
+void streamResponse(HTTPClient& http, uint32_t* pt, uint32_t* ct, uint32_t* tt) {
   server.sendHeader("Access-Control-Allow-Origin", "*");
   server.sendHeader("Cache-Control", "no-cache");
   server.setContentLength(CONTENT_LENGTH_UNKNOWN);
   server.send(200, "text/event-stream", "");
   NetworkClient* stream = http.getStreamPtr();
   uint8_t buf[1024];
+  String tail;
+  tail.reserve(2048);
   if (stream) {
     while (stream->connected() || stream->available()) {
       size_t avail = stream->available();
       if (avail) {
         if (avail > sizeof(buf)) avail = sizeof(buf);
         int r = stream->read(buf, avail);
-        if (r > 0) server.sendContent(reinterpret_cast<const char*>(buf), (size_t)r);
+        if (r > 0) {
+          server.sendContent(reinterpret_cast<const char*>(buf), (size_t)r);
+          tail.concat(reinterpret_cast<const char*>(buf), (unsigned)r);
+          if (tail.length() > 2048) tail.remove(0, tail.length() - 2048);
+        }
       } else {
         delay(1);
       }
     }
   }
+  if (!parseUsage(tail, *pt, *ct, *tt)) { *pt = *ct = *tt = 0; }
 }
 
-// Attempt one upstream request. Returns HTTP status code. On success for
-// non-stream it sends the response; for stream it streams it. On failure it
-// drains the body and returns the code so the caller can fail over.
+// Attempt one upstream request. Returns HTTP status code.
 int attemptRequest(int idx, const String& body, const String& upstreamModel, bool isStream) {
   Provider& p = g_providers[idx];
   String url = apiRoot(p.url) + "/chat/completions";
 
   // rewrite the "model" field to the upstream (un-namespaced) name
   String sendBody = body;
-  if (upstreamModel != String("")) {
-    int mi = sendBody.indexOf("\"model\"");
-    if (mi >= 0) {
-      int q1 = sendBody.indexOf('"', mi + 7);
-      int q2 = q1 >= 0 ? sendBody.indexOf('"', q1 + 1) : -1;
-      if (q1 > 0 && q2 > q1)
-        sendBody = sendBody.substring(0, q1 + 1) + upstreamModel + sendBody.substring(q2);
-    }
+  int mi = sendBody.indexOf("\"model\"");
+  if (mi >= 0) {
+    int q1 = sendBody.indexOf('"', mi + 7);
+    int q2 = q1 >= 0 ? sendBody.indexOf('"', q1 + 1) : -1;
+    if (q1 > 0 && q2 > q1)
+      sendBody = sendBody.substring(0, q1 + 1) + upstreamModel + sendBody.substring(q2);
+  }
+  // request usage in streaming responses
+  if (isStream && sendBody.indexOf("stream_options") < 0) {
+    int last = sendBody.lastIndexOf('}');
+    if (last > 0)
+      sendBody = sendBody.substring(0, last) + ",\"stream_options\":{\"include_usage\":true}" + sendBody.substring(last);
   }
 
+  String fullModel = p.id + "/" + upstreamModel;
   unsigned long t0 = millis();
   WiFiClientSecure client;
   client.setInsecure();
@@ -542,6 +561,7 @@ int attemptRequest(int idx, const String& body, const String& upstreamModel, boo
   if (!http.begin(client, url)) {
     p.m.total++;
     p.m.failed++;
+    recordUsage(fullModel.c_str(), 0, 0, 0, 0, false);
     return 0;  // connection failure → treat as 0 (fail over)
   }
   http.addHeader("Content-Type", "application/json");
@@ -560,17 +580,20 @@ int attemptRequest(int idx, const String& body, const String& upstreamModel, boo
 
   if (code >= 200 && code < 300) {
     p.m.success++;
+    uint32_t pt = 0, ct = 0, tt = 0;
     if (isStream) {
-      streamResponse(http);
+      streamResponse(http, &pt, &ct, &tt);
     } else {
       String resp = http.getString();
-      http.end();
+      parseUsage(resp, pt, ct, tt);
       sendJson(200, resp.length() ? resp : "{}");
     }
+    recordUsage(fullModel.c_str(), pt, ct, tt, lat, true);
   } else {
     p.m.failed++;
     if (code == 429) p.m.rateLimited++;
     http.getString();  // drain body, free connection
+    recordUsage(fullModel.c_str(), 0, 0, 0, lat, false);
   }
   http.end();
   return code;
@@ -668,6 +691,32 @@ void handleApiState() {
   doc["stats"]["requests_fail"] = g_reqFail;
   doc["stats"]["avg_latency_ms"] = g_reqOk ? (g_latencySum / g_reqOk) : 0;
 
+  JsonObject usg = doc["usage"].to<JsonObject>();
+  usg["prompt_tokens"] = g_totalPrompt;
+  usg["completion_tokens"] = g_totalCompletion;
+  usg["total_tokens"] = g_totalTokens;
+
+  JsonArray log = usg["recent"].to<JsonArray>();
+  for (int i = 0; i < g_usageCount; i++) {
+    int idx = (g_usageWrite - 1 - i + MAX_USAGE_LOG) % MAX_USAGE_LOG;
+    UsageEntry& e = g_usageLog[idx];
+    JsonObject o = log.add<JsonObject>();
+    o["model"] = e.model;
+    o["prompt_tokens"] = e.promptTokens;
+    o["completion_tokens"] = e.completionTokens;
+    o["total_tokens"] = e.totalTokens;
+    o["latency_ms"] = e.latencyMs;
+    o["ok"] = e.ok;
+  }
+
+  JsonArray mu = usg["models"].to<JsonArray>();
+  for (int i = 0; i < g_modelUsageCount; i++) {
+    JsonObject o = mu.add<JsonObject>();
+    o["model"] = g_modelUsage[i].model;
+    o["requests"] = g_modelUsage[i].requests;
+    o["tokens"] = g_modelUsage[i].tokens;
+  }
+
   JsonArray provs = doc["providers"].to<JsonArray>();
   for (int i = 0; i < g_providerCount; i++) {
     JsonObject o = provs.add<JsonObject>();
@@ -695,14 +744,6 @@ void handleApiState() {
         start = comma + 1;
       }
     }
-  }
-
-  JsonArray als = doc["aliases"].to<JsonArray>();
-  for (int i = 0; i < g_aliasCount; i++) {
-    JsonObject o = als.add<JsonObject>();
-    o["name"] = g_aliases[i].name;
-    o["provider"] = g_aliases[i].provider;
-    o["model"] = g_aliases[i].model;
   }
 
   String out;
@@ -810,51 +851,6 @@ void handleApiProviderFetch() {
   String s;
   serializeJson(out, s);
   sendJson(200, s);
-}
-
-// POST /api/aliases — {name, provider, model}
-void handleApiAliasAdd() {
-  if (!requireAdmin()) return;
-  JsonDocument doc;
-  if (deserializeJson(doc, server.arg("plain"))) { sendError(400, "invalid JSON"); return; }
-  String name = doc["name"] | "";
-  String provider = doc["provider"] | "";
-  String model = doc["model"] | "";
-  name.trim(); provider.trim(); model.trim();
-  if (!name.length() || !provider.length() || !model.length()) {
-    sendError(400, "name, provider and model are required");
-    return;
-  }
-  if (findProvider(provider) < 0) { sendError(400, "unknown provider"); return; }
-
-  int idx = findAlias(name);
-  if (idx < 0) {
-    if (g_aliasCount >= MAX_ALIASES) {
-      sendError(409, "alias limit reached (" + String(MAX_ALIASES) + ")");
-      return;
-    }
-    idx = g_aliasCount++;
-    g_aliases[idx].name = name;
-  }
-  g_aliases[idx].provider = provider;
-  g_aliases[idx].model = model;
-  saveAliases();
-  sendJson(200, "{\"ok\":true}");
-}
-
-// POST /api/aliases/remove — {name}
-void handleApiAliasRemove() {
-  if (!requireAdmin()) return;
-  JsonDocument doc;
-  deserializeJson(doc, server.arg("plain"));
-  String name = doc["name"] | "";
-  name.trim();
-  int idx = findAlias(name);
-  if (idx < 0) { sendError(404, "alias not found"); return; }
-  for (int i = idx; i < g_aliasCount - 1; i++) g_aliases[i] = g_aliases[i + 1];
-  g_aliasCount--;
-  saveAliases();
-  sendJson(200, "{\"ok\":true}");
 }
 
 void handleApiTokenGenerate() {
@@ -972,11 +968,11 @@ void setup() {
   Serial.printf("\n=== ESP32 Router v%s ===\n", VERSION);
   g_bootMs = millis();
   loadConfig();
-  Serial.printf("admin %s | token %s | wifi %s | providers %d | aliases %d\n",
+  Serial.printf("admin %s | token %s | wifi %s | providers %d\n",
                 g_adminPass.c_str(),
                 g_localToken.length() ? "set" : "open",
                 g_wifiSsid.length() ? g_wifiSsid.c_str() : "(none)",
-                g_providerCount, g_aliasCount);
+                g_providerCount);
 
   if (g_wifiSsid.length()) {
     WiFi.mode(WIFI_STA);
@@ -1012,8 +1008,6 @@ void setup() {
   server.on("/api/providers/remove", HTTP_POST, handleApiProviderRemove);
   server.on("/api/providers/toggle", HTTP_POST, handleApiProviderToggle);
   server.on("/api/providers/fetch", HTTP_POST, handleApiProviderFetch);
-  server.on("/api/aliases", HTTP_POST, handleApiAliasAdd);
-  server.on("/api/aliases/remove", HTTP_POST, handleApiAliasRemove);
   server.on("/api/token/generate", HTTP_POST, handleApiTokenGenerate);
   server.on("/api/token/clear", HTTP_POST, handleApiTokenClear);
   server.on("/api/password", HTTP_POST, handleApiPassword);

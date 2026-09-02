@@ -103,6 +103,16 @@ input::placeholder{color:var(--subtle)}
 .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .spacer{flex:1}
 
+/* tables */
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.03em;color:var(--subtle);
+  font-weight:600;padding:8px 10px;border-bottom:1px solid var(--border)}
+td{padding:9px 10px;border-bottom:1px solid var(--border);color:var(--text)}
+tr:last-child td{border-bottom:0}
+td.mono{font-family:ui-monospace,monospace;font-size:12px}
+td.ok{color:var(--ok)} td.danger{color:var(--danger)}
+.tnum{text-align:right;font-variant-numeric:tabular-nums}
+
 /* provider cards */
 .provider{border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:12px;background:var(--surface-3)}
 .provider .head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
@@ -126,14 +136,6 @@ input::placeholder{color:var(--subtle)}
 .chip{font-family:ui-monospace,monospace;font-size:11px;padding:3px 9px;border-radius:7px;
   background:var(--surface-2);border:1px solid var(--border);color:var(--muted)}
 .chip.key{color:var(--ok)}
-.chip.alias{color:var(--accent);border-color:rgba(99,102,241,.35)}
-
-/* alias rows */
-.alias{border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:10px;background:var(--surface-3)}
-.alias .head{display:flex;align-items:center;gap:10px}
-.alias .aname{font-family:ui-monospace,monospace;font-weight:700;color:var(--accent)}
-.alias .arrow{color:var(--subtle)}
-.alias .target{font-family:ui-monospace,monospace;font-size:12px;color:var(--muted)}
 
 .empty{color:var(--subtle);font-size:13px;text-align:center;padding:26px}
 
@@ -178,8 +180,8 @@ input::placeholder{color:var(--subtle)}
 
 <div class="tabs">
   <button class="on" data-v="overview" onclick="show('overview')"><span class="ico">&#9678;</span>Overview</button>
+  <button data-v="usage" onclick="show('usage')"><span class="ico">&#128200;</span>Usage</button>
   <button data-v="providers" onclick="show('providers')"><span class="ico">&#9889;</span>Providers</button>
-  <button data-v="aliases" onclick="show('aliases')"><span class="ico">&#8644;</span>Aliases</button>
   <button data-v="settings" onclick="show('settings')"><span class="ico">&#9881;</span>Settings</button>
 </div>
 
@@ -195,6 +197,15 @@ input::placeholder{color:var(--subtle)}
       </div>
     </div>
     <div class="card"><h2>Provider Health</h2><div id="ov-providers"></div></div>
+  </section>
+
+  <!-- ============ USAGE ============ -->
+  <section class="view" id="v-usage">
+    <div class="card"><h2>Token Usage</h2><div class="grid" id="usage-grid"></div></div>
+    <div class="card"><h2>Per Model</h2><div id="usage-models"></div></div>
+    <div class="card"><h2>Recent Requests <span class="count" id="usage-recent-count">0</span></h2>
+      <div id="usage-recent"></div>
+    </div>
   </section>
 
   <!-- ============ PROVIDERS ============ -->
@@ -220,23 +231,6 @@ input::placeholder{color:var(--subtle)}
     </div>
     <div class="card"><h2>Providers <span class="count" id="prov-count">0</span></h2>
       <div id="provider-list"></div>
-    </div>
-  </section>
-
-  <!-- ============ ALIASES ============ -->
-  <section class="view" id="v-aliases">
-    <div class="card">
-      <h2>Add Model Alias</h2>
-      <div class="desc">Map a friendly name (e.g. <code>fast</code>) to a provider + physical model.</div>
-      <div class="frow">
-        <div><label>Alias Name</label><input id="a-name" placeholder="e.g. fast, smart, coding"></div>
-        <div><label>Provider</label><select id="a-provider"></select></div>
-        <div><label>Model</label><input id="a-model" list="a-model-list" placeholder="e.g. llama-3.3-70b-versatile"><datalist id="a-model-list"></datalist></div>
-      </div>
-      <div class="row" style="margin-top:16px"><button class="btn" onclick="saveAlias()">Save Alias</button></div>
-    </div>
-    <div class="card"><h2>Aliases <span class="count" id="alias-count">0</span></h2>
-      <div id="alias-list"></div>
     </div>
   </section>
 
@@ -292,6 +286,9 @@ function show(v){
 function copyText(t){if(!t)return;navigator.clipboard.writeText(t).then(function(){toast('Copied','ok')},function(){prompt('Copy:',t)})}
 
 function fmtBytes(n){if(n>1048576)return (n/1048576).toFixed(1)+' MB';if(n>1024)return (n/1024).toFixed(1)+' KB';return n+' B'}
+function fmtNum(n){return Number(n||0).toLocaleString('en-US')}
+function fmtUptime(s){var d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);
+  if(d)return d+'d '+h+'h';if(h)return h+'h '+m+'m';if(m)return m+'m '+(s%60)+'s';return s+'s'}
 
 /* ---------- Overview ---------- */
 function renderOverview(){
@@ -303,8 +300,8 @@ function renderOverview(){
   stat('Wi-Fi',w.ap_mode?'AP Mode':(w.connected?(w.ssid||'Connected'):'Disconnected'),w.connected||w.ap_mode?'ok':'warn');
   stat('RSSI',w.connected?(w.rssi+' dBm'):'—');
   stat('Uptime',fmtUptime(s.uptime_s));
-  stat('Requests',s.requests_total,undefined,true);
-  stat('Avg Latency',s.avg_latency_ms? (s.avg_latency_ms+' ms'):'—');
+  stat('Requests',fmtNum(s.requests_total));
+  stat('Avg Latency',s.avg_latency_ms?(s.avg_latency_ms+' ms'):'—');
   stat('Active Providers',S.providers.filter(function(p){return p.active}).length);
   stat('Free Heap',fmtBytes(s.heap),s.heap<20000?'warn':'ok',true);
   var pill=document.getElementById('wifi-pill');
@@ -333,14 +330,44 @@ function renderOverview(){
   });
 }
 
-function fmtUptime(s){var d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);
-  if(d)return d+'d '+h+'h';if(h)return h+'h '+m+'m';if(m)return m+'m '+(s%60)+'s';return s+'s'}
+/* ---------- Usage ---------- */
+function renderUsage(){
+  var u=S.usage||{};
+  var g=document.getElementById('usage-grid');g.innerHTML='';
+  function stat(l,v,cls){var d=document.createElement('div');d.className='stat';
+    d.innerHTML='<div class="lbl">'+esc(l)+'</div><div class="val '+(cls||'')+'">'+esc(v)+'</div>';g.appendChild(d)}
+  stat('Total Tokens',fmtNum(u.total_tokens),'ok');
+  stat('Prompt Tokens',fmtNum(u.prompt_tokens));
+  stat('Completion Tokens',fmtNum(u.completion_tokens));
+  stat('Total Requests',fmtNum(S.stats.requests_total));
+
+  var mm=document.getElementById('usage-models');
+  var models=u.models||[];
+  if(!models.length){mm.innerHTML='<div class="empty">No usage yet. Send a request to /v1/chat/completions.</div>'}
+  else{
+    models.sort(function(a,b){return b.tokens-a.tokens});
+    var h='<table><tr><th>Model</th><th class="tnum">Requests</th><th class="tnum">Tokens</th></tr>';
+    models.forEach(function(m){h+='<tr><td class="mono">'+esc(m.model)+'</td><td class="tnum">'+fmtNum(m.requests)+'</td><td class="tnum">'+fmtNum(m.tokens)+'</td></tr>'});
+    h+='</table>';mm.innerHTML=h;
+  }
+
+  var rc=(u.recent||[]).slice(0,20);
+  document.getElementById('usage-recent-count').textContent=rc.length;
+  var rr=document.getElementById('usage-recent');
+  if(!rc.length){rr.innerHTML='<div class="empty">No requests yet.</div>'}
+  else{
+    var h='<table><tr><th>Model</th><th class="tnum">Prompt</th><th class="tnum">Completion</th><th class="tnum">Total</th><th class="tnum">Latency</th><th></th></tr>';
+    rc.forEach(function(r){
+      var st=r.ok?'<td class="ok">ok</td>':'<td class="danger">fail</td>';
+      h+='<tr><td class="mono">'+esc(r.model)+'</td><td class="tnum">'+fmtNum(r.prompt_tokens)+'</td><td class="tnum">'+fmtNum(r.completion_tokens)+'</td><td class="tnum">'+fmtNum(r.total_tokens)+'</td><td class="tnum">'+(r.latency_ms?r.latency_ms+' ms':'—')+'</td>'+st+'</tr>';
+    });
+    h+='</table>';rr.innerHTML=h;
+  }
+}
 
 /* ---------- Providers ---------- */
 function renderProviders(){
   document.getElementById('prov-count').textContent=S.providers.length;
-  document.getElementById('a-provider').innerHTML='<option value="">— select —</option>'+
-    S.providers.filter(function(p){return p.active}).map(function(p){return '<option value="'+esc(p.id)+'">'+esc(p.name)+' ('+esc(p.id)+')</option>'}).join('');
   var list=document.getElementById('provider-list');list.innerHTML='';
   if(!S.providers.length){list.innerHTML='<div class="empty">No providers. Add one above.</div>';return}
   S.providers.forEach(function(p){
@@ -417,47 +444,6 @@ async function removeProvider(id){
   try{await post('/api/providers/remove',{id:id});toast('Provider deleted','ok');await load()}
   catch(e){toast(e.message,'error')}}
 
-/* ---------- Aliases ---------- */
-function renderAliases(){
-  document.getElementById('alias-count').textContent=S.aliases.length;
-  var list=document.getElementById('alias-list');list.innerHTML='';
-  if(!S.aliases.length){list.innerHTML='<div class="empty">No aliases yet. Add one above.</div>';return}
-  S.aliases.forEach(function(a){
-    var d=document.createElement('div');d.className='alias';
-    d.innerHTML='<div class="head"><span class="aname">'+esc(a.name)+'</span><span class="arrow">&#8594;</span>'+
-      '<span class="target">'+esc(a.provider)+' / '+esc(a.model)+'</span><span class="spacer"></span>'+
-      '<button class="btn danger sm" onclick="removeAlias(\''+esc(a.name)+'\')">Delete</button></div>';
-    list.appendChild(d);
-  });
-}
-
-function refreshAliasModels(){
-  var pid=document.getElementById('a-provider').value;
-  var dl=document.getElementById('a-model-list');dl.innerHTML='';
-  if(!pid)return;
-  var p=S.providers.find(function(x){return x.id===pid});
-  if(p&&p.models)p.models.forEach(function(m){
-    var mm=m.indexOf('/')>=0?m.substring(m.indexOf('/')+1):m;
-    var o=document.createElement('option');o.value=mm;dl.appendChild(o);
-  });
-}
-document.getElementById('a-provider').addEventListener('change',refreshAliasModels);
-
-async function saveAlias(){
-  var name=document.getElementById('a-name').value.trim();
-  var provider=document.getElementById('a-provider').value;
-  var model=document.getElementById('a-model').value.trim();
-  if(!name||!provider||!model){toast('Alias name, provider and model are required','error');return}
-  try{await post('/api/aliases',{name:name,provider:provider,model:model});
-    toast('Alias "'+name+'" saved','ok');
-    document.getElementById('a-name').value='';document.getElementById('a-model').value='';await load()}
-  catch(e){toast(e.message,'error')}}
-
-async function removeAlias(name){
-  if(!confirm('Delete alias "'+name+'"?'))return;
-  try{await post('/api/aliases/remove',{name:name});toast('Alias deleted','ok');await load()}
-  catch(e){toast(e.message,'error')}}
-
 /* ---------- Settings ---------- */
 function renderSettings(){
   var tk=S.token;
@@ -480,12 +466,12 @@ async function savePassword(){
   try{await post('/api/password',{password:p});toast('Password updated','ok');document.getElementById('a-pass').value=''}catch(e){toast(e.message,'error')}}
 
 /* ---------- render + init ---------- */
-function render(){renderOverview();renderProviders();renderAliases();renderSettings()}
+function render(){renderOverview();renderUsage();renderProviders();renderSettings()}
 async function load(){try{S=await api('/api/state');render()}catch(e){toast('Failed to load: '+e.message,'error')}}
 
 (function init(){
   var v=(location.hash||'').replace('#/','');
-  if(['overview','providers','aliases','settings'].indexOf(v)<0)v='overview';
+  if(['overview','usage','providers','settings'].indexOf(v)<0)v='overview';
   show(v);load();setInterval(load,15000);
 })();
 </script>

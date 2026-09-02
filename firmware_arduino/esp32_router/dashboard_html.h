@@ -165,6 +165,52 @@ td.ok{color:var(--ok)} td.danger{color:var(--danger)}
   .frow>div{min-width:100%}
 }
 </style>
+<style>
+/* NixRoute glass theme — translucent surfaces over a quiet deep-blue canvas.
+   No external assets; backdrop-filter degrades gracefully to a flat dark. */
+:root{
+  --bg:#0a0f1e; --surface:rgba(255,255,255,.045); --surface-2:rgba(255,255,255,.07);
+  --surface-3:rgba(255,255,255,.028); --border:rgba(255,255,255,.09); --border-2:rgba(255,255,255,.15);
+  --text:#eaf0fb; --muted:#9aa8c2; --subtle:#7c89a6;
+  --accent:#2fd3de; --accent-h:#59e1ea; --accent-soft:rgba(47,211,222,.16);
+  --ok:#58e08c; --warn:#ffcd5c; --danger:#ff7d8a; --radius:14px;
+}
+body{
+  background:
+    radial-gradient(1100px 620px at 88% -12%, rgba(70,90,150,.26), transparent 62%),
+    radial-gradient(900px 520px at -8% 22%, rgba(0,168,181,.15), transparent 55%),
+    radial-gradient(700px 500px at 50% 115%, rgba(88,60,140,.14), transparent 60%),
+    linear-gradient(180deg,#0b1022 0%,#080d1b 55%,#05070f 100%);
+  background-attachment:fixed;
+}
+header{background:rgba(11,16,34,.55);backdrop-filter:blur(18px) saturate(1.4);-webkit-backdrop-filter:blur(18px) saturate(1.4);
+  border-bottom:1px solid rgba(255,255,255,.08)}
+.card{background:linear-gradient(180deg,rgba(255,255,255,.065),rgba(255,255,255,.03));
+  border:1px solid rgba(255,255,255,.11);
+  backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
+  box-shadow:0 12px 34px rgba(2,6,18,.4),inset 0 1px 0 rgba(255,255,255,.07)}
+.stat{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.1);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
+.provider{background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.1);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
+.snippet{background:rgba(255,255,255,.03);border-color:rgba(255,255,255,.09)}
+input,select,textarea{background:rgba(3,7,16,.55);border-color:rgba(255,255,255,.13)}
+input:focus,select:focus,textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.btn{background:linear-gradient(180deg,#16c7d4,#00a4b0);box-shadow:0 5px 16px rgba(0,168,181,.26)}
+.btn:hover{filter:brightness(1.08)}
+.btn.ghost{background:rgba(255,255,255,.06);border-color:rgba(255,255,255,.16);box-shadow:none}
+.btn.ghost:hover{background:rgba(255,255,255,.11)}
+.btn.danger{border-color:rgba(255,125,138,.4);box-shadow:none}
+.tabs button.on{background:rgba(255,255,255,.09);box-shadow:inset 0 0 0 1px rgba(255,255,255,.16)}
+.tabs button:hover{background:rgba(255,255,255,.05)}
+.pill.ok{color:var(--ok);background:rgba(88,224,140,.12);border-color:rgba(88,224,140,.35)}
+.pill.warn{color:var(--warn);background:rgba(255,205,92,.12);border-color:rgba(255,205,92,.35)}
+.pill.off{color:var(--muted);background:rgba(255,255,255,.05);border-color:rgba(255,255,255,.12)}
+.chip{background:rgba(255,255,255,.06)}
+.pg-output{background:rgba(3,7,16,.5);border-color:rgba(255,255,255,.1);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+#toast .toast{background:rgba(18,24,44,.92);border-color:rgba(255,255,255,.14);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}
+.heapbar .track{background:rgba(255,255,255,.08)}
+.kv .val.open{color:var(--ok)}
+table td,table th{border-color:rgba(255,255,255,.07)}
+</style>
 </head>
 <body>
 
@@ -199,12 +245,17 @@ td.ok{color:var(--ok)} td.danger{color:var(--danger)}
         <code id="endpoint-url" style="padding:10px 12px;background:var(--surface-3);border:1px solid var(--border);border-radius:9px"></code>
         <button class="btn ghost" onclick="copyText(epUrl())">Copy</button>
       </div>
+      <div class="kv" style="margin-top:14px">
+        <div class="item"><span class="lbl">Token in use</span><span class="val" id="ep-token">—</span>
+          <button class="btn ghost sm" onclick="copyText($('#ep-token').textContent)">Copy</button>
+        </div>
+      </div>
     </div>
+    <div class="card"><h2>Provider Health</h2><div id="ov-providers"></div></div>
     <div class="card"><h2>Quick Client Setup</h2>
       <div class="desc">One-click snippets to point your tools at NixRoute.</div>
       <div id="snippets"></div>
     </div>
-    <div class="card"><h2>Provider Health</h2><div id="ov-providers"></div></div>
   </section>
 
   <section class="view" id="v-usage">
@@ -344,6 +395,10 @@ function renderOverview(){
   var pct=s.heap_total?Math.max(0,Math.min(100,Math.round(s.heap/s.heap_total*100))):50;
   document.getElementById('hdr-heap-fill').style.width=pct+'%';
   document.getElementById('endpoint-url').textContent=epUrl()||'http://<ip>/v1';
+  var epTok=document.getElementById('ep-token');
+  if(epTok){var tl=S.token&&S.token.list;
+    epTok.textContent=(tl&&tl.length)?tl[0]:'open (no auth)';
+    epTok.className='val'+(tl&&tl.length?'':' open');}
   document.getElementById('foot-ver').textContent=S.version;
   renderSnippets();
   var op=document.getElementById('ov-providers');op.innerHTML='';

@@ -1364,8 +1364,9 @@ bool detectAndStream() {
   g_ownsJob = true;
   g_currentJob = job;
 
-  // stream the rewritten head into the body pipe
+  // stream the rewritten head into the body pipe, then release the head buffer
   xStreamBufferSend(g_bodyStream, (const uint8_t*)g_head.c_str(), g_head.length(), pdMS_TO_TICKS(10000));
+  g_head = "";
   return true;
 }
 

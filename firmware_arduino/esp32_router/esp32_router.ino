@@ -20,6 +20,8 @@
 #include <WebServer.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
+#include <ESPmDNS.h>
+#include <DNSServer.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
 #include <esp_random.h>
@@ -89,6 +91,8 @@ Provider g_providers[MAX_PROVIDERS];
 int g_providerCount = 0;
 String g_providerModels[MAX_PROVIDERS];   // comma-separated raw model ids
 WebServer server(80);
+DNSServer dnsServer;
+bool g_apMode = false;
 uint32_t g_reqTotal = 0, g_reqOk = 0, g_reqFail = 0;
 uint32_t g_latencySum = 0;
 uint32_t g_rr = 0;                         // round-robin cursor
@@ -1077,6 +1081,7 @@ void handleRoot() {
 void webServerTask(void*) {
   for (;;) {
     server.handleClient();
+    if (g_apMode) dnsServer.processNextRequest();
   }
 }
 
@@ -1101,13 +1106,21 @@ void setup() {
     Serial.print("Connecting WiFi");
     int t = 0;
     while (WiFi.status() != WL_CONNECTED && t < 30) { delay(500); Serial.print("."); t++; }
-    if (WiFi.status() == WL_CONNECTED)
+    if (WiFi.status() == WL_CONNECTED) {
       Serial.printf("\nWiFi OK IP %s RSSI %d\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
-    else
+      if (MDNS.begin("nixroute")) {
+        MDNS.addService("http", "tcp", 80);
+        Serial.println("mDNS http://nixroute.local");
+      }
+    } else {
       Serial.printf("\nWiFi FAIL %d\n", WiFi.status());
+    }
   } else {
     WiFi.mode(WIFI_AP);
     WiFi.softAP("NixRoute-Setup", "12345678");
+    g_apMode = true;
+    // Captive portal: redirect every DNS name to the AP IP.
+    dnsServer.start(53, "*", WiFi.softAPIP());
     Serial.printf("No WiFi configured — AP 'NixRoute-Setup' (pw 12345678) IP %s\n",
                   WiFi.softAPIP().toString().c_str());
   }

@@ -18,7 +18,7 @@ const char* DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions";
 const char* OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
 Preferences prefs;
-String g_localToken, g_deepseekKey, g_openrouterKey;
+String g_localToken, g_deepseekKey, g_openrouterKey, g_customUrl, g_customKey;
 WebServer server(80);
 uint32_t reqTotal=0, reqOk=0, reqFail=0;
 
@@ -37,8 +37,9 @@ void loadConfig(){
   g_localToken = prefs.getString("local_token","");
   g_deepseekKey = prefs.getString("ds_key","");
   g_openrouterKey = prefs.getString("or_key","");
+  g_customUrl = prefs.getString("custom_url",""); // ex: https://bandelbanget.xyz/v1
+  g_customKey = prefs.getString("custom_key","");
   prefs.end();
-  // fallback: jika NVS kosong tapi hardcode ada, pakai hardcode (untuk migrasi)
 }
 void saveKey(const char* nsKey, const String& val){
   prefs.begin("gateway", false);
@@ -67,12 +68,15 @@ void handleHealth(){
   String j=String("{\"status\":\"")+(conn?"ok":"wifi_disconnected")+"\",\"uptime_s\":"+(millis()/1000)
     +",\"wifi_connected\":"+(conn?"true":"false")+",\"ip\":\""+ip+"\",\"rssi\":"+WiFi.RSSI()
     +",\"free_heap\":"+ESP.getFreeHeap()+",\"requests_total\":"+reqTotal+",\"requests_ok\":"+reqOk+",\"requests_fail\":"+reqFail
-    +",\"local_token_set\":"+(g_localToken.length()?"true":"false")+",\"ds_set\":"+(g_deepseekKey.length()?"true":"false")+",\"or_set\":"+(g_openrouterKey.length()?"true":"false")+"}";
+    +",\"local_token_set\":"+(g_localToken.length()?"true":"false")+",\"ds_set\":"+(g_deepseekKey.length()?"true":"false")+",\"or_set\":"+(g_openrouterKey.length()?"true":"false")+",\"custom_set\":"+(g_customUrl.length()&&g_customKey.length()?"true":"false")+"}";
   sendJson(200,j);
 }
 void handleModels(){
   if(!authCheck()){ sendJson(401,"{\"error\":{\"message\":\"unauthorized\"}}"); return; }
-  sendJson(200,"{\"object\":\"list\",\"data\":[{\"id\":\"deepseek-chat\",\"object\":\"model\",\"owned_by\":\"deepseek\"},{\"id\":\"deepseek-reasoner\",\"object\":\"model\",\"owned_by\":\"deepseek\"},{\"id\":\"openrouter-auto\",\"object\":\"model\",\"owned_by\":\"openrouter\"}]}");
+  String m="{\"object\":\"list\",\"data\":[{\"id\":\"deepseek-chat\",\"object\":\"model\",\"owned_by\":\"deepseek\"},{\"id\":\"deepseek-reasoner\",\"object\":\"model\",\"owned_by\":\"deepseek\"},{\"id\":\"openrouter-auto\",\"object\":\"model\",\"owned_by\":\"openrouter\"}";
+  if(g_customUrl.length()) m+=",{\"id\":\"custom-model\",\"object\":\"model\",\"owned_by\":\"custom\"},{\"id\":\"bandel-model\",\"object\":\"model\",\"owned_by\":\"custom\"}";
+  m+="]}";
+  sendJson(200,m);
 }
 void handleOptions(){
   server.sendHeader("Access-Control-Allow-Origin","*");
@@ -86,17 +90,20 @@ void handleChat(){
   String body=server.arg("plain");
   if(body.length()==0){ reqFail++; sendJson(400,"{\"error\":{\"message\":\"empty body\"}}"); return; }
   if(body.length()>8192){ reqFail++; sendJson(413,"{\"error\":{\"message\":\"payload too large\"}}"); return; }
-  // routing simple: deepseek-* -> deepseek, else openrouter
   String model="deepseek-chat";
   int mi=body.indexOf("\"model\"");
   if(mi>=0){ int q1=body.indexOf("\"",mi+7); int q2=body.indexOf("\"",q1+1); if(q1>0&&q2>q1) model=body.substring(q1+1,q2); }
-  bool useOR = model.startsWith("openrouter-") || model.startsWith("claude-") || model.startsWith("gemini-");
-  String apiKey = useOR ? g_openrouterKey : g_deepseekKey;
-  String url = useOR ? OPENROUTER_URL : DEEPSEEK_URL;
+  bool useCustom = (model.startsWith("custom-")||model.startsWith("bandel-")) && g_customUrl.length() && g_customKey.length();
+  bool useOR = !useCustom && (model.startsWith("openrouter-") || model.startsWith("claude-") || model.startsWith("gemini-"));
+  String apiKey, url;
+  if(useCustom){ apiKey=g_customKey; url=g_customUrl; if(!url.endsWith("/chat/completions")){ if(url.endsWith("/v1")) url+="/chat/completions"; else if(url.endsWith("/")) url+="v1/chat/completions"; else url+="/v1/chat/completions"; } }
+  else if(useOR){ apiKey=g_openrouterKey; url=OPENROUTER_URL; }
+  else { apiKey=g_deepseekKey; url=DEEPSEEK_URL; }
   if(apiKey.length()==0){
-    // fallback coba provider lain
-    if(g_deepseekKey.length()){ apiKey=g_deepseekKey; url=DEEPSEEK_URL; }
+    if(useCustom){ /* no fallback for custom */ }
+    else if(g_deepseekKey.length()){ apiKey=g_deepseekKey; url=DEEPSEEK_URL; }
     else if(g_openrouterKey.length()){ apiKey=g_openrouterKey; url=OPENROUTER_URL; }
+    else if(g_customUrl.length() && g_customKey.length()){ apiKey=g_customKey; url=g_customUrl; if(!url.endsWith("/chat/completions")) url+="/v1/chat/completions"; }
     else { reqFail++; sendJson(500,"{\"error\":{\"message\":\"provider API key belum diisi — buka http://"+WiFi.localIP().toString()+"/ isi di dashboard\",\"type\":\"config\"}}"); return; }
   }
   bool isStream = body.indexOf("\"stream\":true")>=0 || body.indexOf("\"stream\": true")>=0;
@@ -136,7 +143,8 @@ void handleRoot(){
   + "<div class=card><h2>Provider Keys</h2>"
   + "<p><b>DeepSeek:</b> "+(g_deepseekKey.length()?"<span class=ok>tersimpan</span> <code>"+maskKey(g_deepseekKey)+"</code>":"<span class=warn>kosong</span>")+"</p>"
   + "<p><b>OpenRouter:</b> "+(g_openrouterKey.length()?"<span class=ok>tersimpan</span> <code>"+maskKey(g_openrouterKey)+"</code>":"<span class=warn>kosong</span>")+"</p>"
-  + "<form method=POST action=/admin/keys><label>DeepSeek API Key<br><input name=ds_key placeholder='sk-...' value=''></label><br><label>OpenRouter API Key<br><input name=or_key placeholder='sk-or-...' value=''></label><br><button>Simpan Keys</button> <small>disimpan ke NVS, tidak tampil full lagi</small></form></div>"
+  + "<p><b>Custom (bandelbanget.xyz):</b> "+(g_customUrl.length()?"<span class=ok>"+g_customUrl+"</span> <code>"+maskKey(g_customKey)+"</code>":"<span class=warn>kosong</span>")+"</p>"
+  + "<form method=POST action=/admin/keys><label>DeepSeek API Key<br><input name=ds_key placeholder='sk-...' value=''></label><br><label>OpenRouter API Key<br><input name=or_key placeholder='sk-or-...' value=''></label><br><label>Custom Base URL (ex: https://bandelbanget.xyz/v1)<br><input name=custom_url placeholder='https://bandelbanget.xyz/v1' value=''></label><br><label>Custom API Key<br><input name=custom_key placeholder='sk-custom-...' value=''></label><br><button>Simpan Keys</button> <small>custom pakai model <code>custom-*</code> atau <code>bandel-*</code></small></form></div>"
   + "<div class=card><h2>API</h2><p><code>GET /health</code> · <code>GET /v1/models</code> · <code>POST /v1/chat/completions</code> · <code>GET /admin/status</code></p><p><small>Contoh OpenAI SDK: <code>OPENAI_BASE_URL=http://"+ip+"/v1</code></small></p></div>"
   + "</body></html>";
   server.sendHeader("Cache-Control","no-store");
@@ -144,8 +152,11 @@ void handleRoot(){
 }
 void handleKeysPost(){
   String ds=server.arg("ds_key"); String orK=server.arg("or_key");
+  String cu=server.arg("custom_url"); String ck=server.arg("custom_key");
   if(ds.length()){ saveKey("ds_key", ds); g_deepseekKey=ds; }
   if(orK.length()){ saveKey("or_key", orK); g_openrouterKey=orK; }
+  if(cu.length()){ if(cu.endsWith("/")) cu=cu.substring(0,cu.length()-1); saveKey("custom_url", cu); g_customUrl=cu; }
+  if(ck.length()){ saveKey("custom_key", ck); g_customKey=ck; }
   server.sendHeader("Location","/"); server.send(303,"","");
 }
 void handleTokenGen(){

@@ -204,7 +204,7 @@ void handleRoot(){
 <div style="flex:1"></div>
 <a href="/admin/logout" style="color:#888;font-size:10px">Logout</a>
 </aside><div class=main><div class=header><div class=logo>NixRoute ESP32 <span style="font-weight:400;color:#666">— SuprimX · nixroute 0.5.59</span></div><div style="font-size:12px;color:#666">)HTML") + ip + R"HTML(</div></div><div class=wrap>)HTML"
-  + "<div class=card><h2>◉ API Endpoint</h2>"
+  + "<div class=card id=\"routes\"><h2>◉ API Endpoint — Routes</h2>"
   + "<div class=row><span class='badge on'>Local</span><div class=mono>http://"+ip+"/v1</div><button class='btn ghost' onclick=\"navigator.clipboard.writeText('http://"+ip+"/v1')\">Copy</button></div>"
   + "<div class=row><span class=badge>WiFi</span><div class=mono>"+(conn?ip+" · RSSI "+WiFi.RSSI()+"dBm":"disconnected")+"</div><span class='small "+(conn?"ok":"warn")+"'>"+(conn?"connected":"disconnected")+"</span></div>"
   + "<div class=kv><div><b>Uptime</b> "+(millis()/1000)+"s</div><div><b>Heap</b> "+ESP.getFreeHeap()+"</div><div><b>Requests</b> "+reqTotal+" ("+reqOk+" ok / "+reqFail+" fail)</div><div><b>IP</b> "+ip+"</div></div></div>"
@@ -215,7 +215,7 @@ void handleRoot(){
   + "<div class=small style='margin:8px 0'>Client: <code>Authorization: Bearer TOKEN</code> atau <code>OPENAI_API_KEY=TOKEN</code> + <code>OPENAI_BASE_URL=http://"+ip+"/v1</code> — <code>curl -H \"Authorization: Bearer "+(g_localToken.length()?g_localToken:"TOKEN")+"\" http://"+ip+"/v1/models</code></div>"
   + "</div>"
 
-  + "<div class=card><h2>🔌 Providers</h2>"
+  + "<div class=card id=\"providers\"><h2>🔌 Providers</h2>"
   + "<div class=row><span class=badge>DeepSeek</span><div class=mono>"+dsMask+"</div></div>"
   + "<div class=row><span class=badge>OpenRouter</span><div class=mono>"+orMask+"</div></div>"
   + "<div class=row><span class=badge>Custom</span><div class=mono style='font-size:12px'>"+cuMask+"</div></div>"
@@ -226,6 +226,12 @@ void handleRoot(){
   + "<input class=input name=custom_key placeholder='Custom sk-...'>"
   + "<button class=btn>Simpan Keys</button> <span class=small>pakai model <code>custom-*</code> / <code>bandel-*</code> untuk custom</span>"
   + "</form></div>"
+
+  + "<div class=card id=\"policies\"><h2>🧩 Policies — Routing</h2><div class=small><code>deepseek-*</code> → DeepSeek &nbsp; <code>openrouter-*/claude-*/gemini-*</code> → OpenRouter &nbsp; <code>custom-*/bandel-*</code> → Custom ("+ (g_customUrl.length()?g_customUrl:"(custom kosong)") +")</div><div class=small>Fallback: DeepSeek → OpenRouter → Custom (sebelum byte pertama)</div></div>"
+
+  + "<div class=card id=\"observe\"><h2>📊 Observe — Usage</h2><div class=kv><div><b>Total</b> "+reqTotal+"</div><div><b>OK</b> "+reqOk+"</div><div><b>Fail</b> "+reqFail+"</div><div><b>Heap</b> "+ESP.getFreeHeap()+"</div></div><div class=small>GET <code>/health</code> · <code>/admin/status</code> untuk JSON</div></div>"
+
+  + "<div class=card id=\"tools\"><h2>🔧 Tools</h2><div class=small><code>curl http://"+ip+"/health</code> · <code>curl -H "Authorization: Bearer TOKEN" http://"+ip+"/v1/models</code> · <code>POST /v1/chat/completions</code></div><div class=small>OpenAI SDK: <code>OPENAI_BASE_URL=http://"+ip+"/v1</code></div></div>"
 
   + "<div class=card><h2>🛡 Settings</h2>"
   + "<form method=POST action=/admin/password><div class=row><input class=input name=new_pass placeholder='Ganti password dashboard (default 123456)'><button class=btn>Update Password</button></div></form>"

@@ -31,6 +31,7 @@
 #include "freertos/semphr.h"
 #include "freertos/stream_buffer.h"
 #include "mbedtls/md.h"
+#include <lwip/sockets.h>
 #include "dashboard_html.h"
 
 #define VERSION          "3.2.1"
@@ -668,6 +669,33 @@ int resolveCandidates(String model, int* candidates, String* upstreamModel) {
 // ---------------------------------------------------------------------------
 // Raw HTTP response writers (used by the proxy task on Core 1)
 // ---------------------------------------------------------------------------
+// Bounded write to the downstream client. NetworkClient::write() can spin for
+// ~30 s once its TCP send buffer is full (e.g. the client vanished mid-stream),
+// which would wedge the single-flight slot. So we gate every small chunk on a
+// short select() writability check (2.5 s) and stop the moment the peer stops
+// draining. Returns false when the peer is gone or unreadable.
+static bool sendBounded(NetworkClient& c, const uint8_t* buf, size_t len) {
+  size_t off = 0;
+  while (off < len) {
+    int fd = c.fd();
+    if (fd < 0 || !c.connected()) return false;
+    fd_set wset;
+    FD_ZERO(&wset);
+    FD_SET(fd, &wset);
+    struct timeval tv;
+    tv.tv_sec = 2;
+    tv.tv_usec = 500000;
+    int rc = select(fd + 1, NULL, &wset, NULL, &tv);
+    if (rc <= 0 || !FD_ISSET(fd, &wset)) return false;
+    size_t n = len - off;
+    if (n > 1400) n = 1400;  // small writes => fast, fine-grained progress
+    size_t w = c.write(buf + off, n);
+    if (w == 0) return false;  // fatal socket error / peer gone
+    off += w;
+  }
+  return true;
+}
+
 bool writeJson(NetworkClient& c, int code, const String& body) {
   c.printf("HTTP/1.1 %d %s\r\n", code, reasonPhrase(code));
   c.print("Content-Type: application/json\r\n");
@@ -676,9 +704,9 @@ bool writeJson(NetworkClient& c, int code, const String& body) {
   c.printf("Content-Length: %d\r\n", body.length());
   c.print("Connection: close\r\n");
   c.print("\r\n");
-  size_t w = c.write(reinterpret_cast<const uint8_t*>(body.c_str()), body.length());
+  bool ok = sendBounded(c, reinterpret_cast<const uint8_t*>(body.c_str()), body.length());
   c.flush();
-  return w == body.length();
+  return ok;
 }
 
 void writeErrorRaw(NetworkClient& c, int code, const String& msg) {
@@ -848,7 +876,7 @@ bool streamResponseManual(T& client, bool chunked, size_t contentLength,
   // client socket died mid-stream.
   auto relayBlock = [&](const uint8_t* p, size_t n) -> bool {
     c.printf("%x\r\n", (unsigned)n);
-    if (c.write(p, n) != n) return false;
+    if (!sendBounded(c, p, n)) return false;
     c.print("\r\n");
     c.flush();
     tail.concat((const char*)p, n);
@@ -980,13 +1008,22 @@ int relayUpstream(T& client, ProxyJob* job, NetworkClient& c,
 
   bool ok = (code >= 200 && code < 300);
   if (ok) {
-    job->responseStarted = true;  // 200 head is about to hit the client
     uint32_t pt = 0, ct = 0, tt = 0;
     bool sent = true;
     if (job->isStream) {
+      job->responseStarted = true;  // 200 head is about to hit the client
       sent = streamResponseManual(client, chunked, contentLength, c, &pt, &ct, &tt);
     } else {
       String resp = readBodyManual(client, chunked, contentLength);
+      // Non-streaming bodies are buffered in RAM: if the provider sent more
+      // than the device can hold, never relay a silently truncated "200".
+      bool truncated = !chunked && contentLength > 0 &&
+                       (size_t)resp.length() < contentLength;
+      if (truncated) {
+        client.stop();
+        return -2;  // upstream body could not be buffered in full
+      }
+      job->responseStarted = true;
       parseUsage(resp, pt, ct, tt);
       sent = writeJson(c, 200, resp.length() ? resp : "{}");
     }
@@ -1397,6 +1434,9 @@ bool detectAndStream() {
     job->providers[k].key = g_providers[idx].key;
   }
   job->client = server.client();
+  // Note: downstream writes are gated by sendBounded() (see below) so a client
+  // that vanishes mid-stream frees the single-flight slot in ~2.5 s instead of
+  // the ~30 s NetworkClient::write() retry loop would otherwise take.
 
   if (xQueueSend(g_proxyQueue, &job, 0) != pdTRUE) {
     delete job;

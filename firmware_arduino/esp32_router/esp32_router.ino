@@ -923,8 +923,8 @@ button:hover{background:var(--accent-h)}
 .hint{font-size:11px;color:var(--muted);margin-top:14px;text-align:center}
 code{background:#0d1526;border:1px solid var(--border);padding:1px 6px;border-radius:6px;font-size:11px}
 </style></head><body><div class="card"><div class="logo"><svg viewBox="0 0 500 500" xmlns="http://www.w3.org/2000/svg"><rect x="70" y="70" width="92" height="375" rx="46" fill="#0c1a30"/><rect x="338" y="70" width="92" height="375" rx="46" fill="#0c1a30"/><path d="M416 85l26-26m0 0h-24m24 0v24" fill="none" stroke="#0c1a30" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/><line x1="125" y1="130" x2="375" y2="380" stroke="#0c1a30" stroke-width="96" stroke-linecap="round"/><line x1="125" y1="130" x2="375" y2="380" stroke="#ffffff" stroke-width="18" stroke-linecap="round"/><circle cx="125" cy="130" r="34" fill="#0c1a30" stroke="#ffffff" stroke-width="14"/><circle cx="125" cy="130" r="16" fill="#00a8b5"/><circle cx="250" cy="255" r="34" fill="#0c1a30" stroke="#ffffff" stroke-width="14"/><circle cx="250" cy="255" r="16" fill="#00a8b5"/><circle cx="375" cy="380" r="34" fill="#0c1a30" stroke="#ffffff" stroke-width="14"/><circle cx="375" cy="380" r="16" fill="#00a8b5"/></svg><div><h1>NixRoute</h1><div class="sub">ESP32 API Gateway</div></div></div>
-<p class="sub">Sign in to the dashboard. Default password <code>123456</code>.</p>
 <form method="POST" action="/admin/login"><label>Password</label><input name="password" type="password" placeholder="••••••" required autofocus><button>Sign In</button></form>
+<p style="text-align:center;font-size:13px;color:var(--muted);margin:16px 0 0">Sign in to the dashboard. Default password <code>123456</code>.</p>
 <p class="hint">Change the password in Settings after login.</p></div></body></html>)HTML";
   server.send(200, "text/html", html);
 }

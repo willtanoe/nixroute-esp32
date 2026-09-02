@@ -244,6 +244,13 @@ python tests/scripts/test_admin_api.py --host 192.168.110.187 --password 123456
 
 ---
 
+## Contributing
+
+Bug reports, feature requests, and pull requests are welcome — see
+[`CONTRIBUTING.md`](CONTRIBUTING.md).
+
+---
+
 ## License
 
 MIT — see [`LICENSE`](LICENSE).

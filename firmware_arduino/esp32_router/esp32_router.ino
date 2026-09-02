@@ -766,42 +766,61 @@ bool streamResponseManual(T& client, bool chunked, size_t contentLength,
   String tail;
   tail.reserve(2048);
   size_t remaining = contentLength;
-  unsigned long startT = millis();
-  while (true) {
-    size_t want;
-    if (chunked) {
+  unsigned long lastData = millis();
+
+  // Relay one block downstream as its own HTTP chunk. Returns false when the
+  // client socket died mid-stream.
+  auto relayBlock = [&](const uint8_t* p, size_t n) -> bool {
+    c.printf("%x\r\n", (unsigned)n);
+    if (c.write(p, n) != n) return false;
+    c.print("\r\n");
+    c.flush();
+    tail.concat((const char*)p, n);
+    if (tail.length() > 2048) tail.remove(0, tail.length() - 2048);
+    return true;
+  };
+
+  if (chunked) {
+    // A single upstream chunk may span many buffers: consume it fully (plus its
+    // CRLF) before parsing the next chunk-size line, otherwise the leftover
+    // bytes of a large chunk are misread as a bogus size and the stream dies.
+    for (;;) {
       size_t sz = readChunkSize(client);
       if (sz == 0) { client.readStringUntil('\n'); break; }
-      remaining = sz;
-      want = remaining > sizeof(buf) ? sizeof(buf) : remaining;
-      startT = millis();
-    } else if (contentLength > 0) {
-      if (remaining == 0) break;
-      want = remaining > sizeof(buf) ? sizeof(buf) : remaining;
-    } else {
-      size_t avail = client.available();
-      if (!avail) {
-        if (!client.connected() || millis() - startT > 5000) break;
+      size_t left = sz;
+      while (left > 0) {
+        size_t want = left > sizeof(buf) ? sizeof(buf) : left;
+        int r = client.read(buf, want);
+        if (r <= 0) { sent = false; break; }
+        lastData = millis();
+        if (!relayBlock(buf, (size_t)r)) { sent = false; break; }
+        left -= r;
+      }
+      if (!sent) break;
+      client.readStringUntil('\n');  // chunk terminator
+    }
+  } else if (contentLength > 0) {
+    while (remaining > 0) {
+      size_t want = remaining > sizeof(buf) ? sizeof(buf) : remaining;
+      int r = client.read(buf, want);
+      if (r <= 0) { sent = false; break; }
+      lastData = millis();
+      if (!relayBlock(buf, (size_t)r)) { sent = false; break; }
+      remaining -= r;
+    }
+  } else {
+    // No length and no chunking: read until the upstream closes, with an idle
+    // timeout so a stalled peer cannot wedge the proxy task forever.
+    for (;;) {
+      if (!client.available()) {
+        if (!client.connected() || millis() - lastData > 5000) break;
         delay(1);
         continue;
       }
-      want = avail > sizeof(buf) ? sizeof(buf) : avail;
-    }
-    int r = client.read(buf, want);
-    if (r <= 0) break;
-    startT = millis();
-    c.printf("%x\r\n", (unsigned)r);
-    size_t w = c.write(buf, r);
-    c.print("\r\n");
-    if (w != (size_t)r) { sent = false; break; }  // client gone mid-stream
-    c.flush();
-    tail.concat((const char*)buf, (unsigned)r);
-    if (tail.length() > 2048) tail.remove(0, tail.length() - 2048);
-    if (chunked) {
-      remaining -= r;
-      if (remaining == 0) client.readStringUntil('\n');
-    } else if (contentLength > 0) {
-      remaining -= r;
+      int r = client.read(buf, sizeof(buf));
+      if (r <= 0) break;
+      lastData = millis();
+      if (!relayBlock(buf, (size_t)r)) { sent = false; break; }
     }
   }
   if (sent) { c.print("0\r\n\r\n"); c.flush(); }

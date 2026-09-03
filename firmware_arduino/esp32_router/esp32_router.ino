@@ -13,8 +13,9 @@
 // A FreeRTOS queue hands each chat request (with its client socket) from Core 0
 // to Core 1, so a long stream never blocks the dashboard.
 //
-// Memory-safe: 8 KB request cap (413), chunked SSE passthrough (no full-body
-// buffering), config persisted in NVS via Preferences.
+// Memory-aware: request bodies are streamed chunk-by-chunk (head buffered only
+// up to 16 KB for model routing); chunked SSE passthrough with no full-body
+// buffering; config persisted in NVS via Preferences.
 
 #include <WiFi.h>
 #include <WebServer.h>
@@ -801,14 +802,17 @@ size_t readChunkSize(T& client) {
 
 // Defensive cap for buffered non-stream responses: the ESP32 has no RAM to
 // buffer an arbitrarily large JSON body, so stop at a sane ceiling instead of
-// crashing the whole gateway on an OOM. Returns what was read (may be partial).
+// crashing the whole gateway on an OOM. `complete` (optional) reports whether
+// the whole body was consumed, so callers never relay a silently truncated 200.
 #define BODY_BUF_LIMIT (192 * 1024)
 template <class T>
-String readBodyManual(T& client, bool chunked, size_t contentLength) {
+String readBodyManual(T& client, bool chunked, size_t contentLength,
+                      bool* complete = nullptr) {
   String body;
   body.reserve(4096);
   uint8_t buf[1024];
   bool capped = false;
+  bool finished = false;
   auto add = [&](const uint8_t* p, size_t n) {
     if (!capped && body.length() + n <= BODY_BUF_LIMIT && ESP.getFreeHeap() >= 24 * 1024) {
       body.concat((const char*)p, n);
@@ -817,9 +821,9 @@ String readBodyManual(T& client, bool chunked, size_t contentLength) {
     }
   };
   if (chunked) {
-    while (!capped) {
+    while (!capped && !finished) {
       size_t sz = readChunkSize(client);
-      if (sz == 0) { client.readStringUntil('\n'); break; }
+      if (sz == 0) { client.readStringUntil('\n'); finished = true; break; }
       size_t remaining = sz;
       while (remaining > 0 && !capped) {
         size_t want = remaining > sizeof(buf) ? sizeof(buf) : remaining;
@@ -828,6 +832,7 @@ String readBodyManual(T& client, bool chunked, size_t contentLength) {
         add(buf, r);
         remaining -= r;
       }
+      if (remaining > 0) break;  // upstream died mid-chunk
       client.readStringUntil('\n');
     }
   } else if (contentLength > 0) {
@@ -839,6 +844,7 @@ String readBodyManual(T& client, bool chunked, size_t contentLength) {
       add(buf, r);
       remaining -= r;
     }
+    finished = (remaining == 0) && !capped;
   } else {
     unsigned long startT = millis();
     while ((client.connected() || client.available()) && !capped) {
@@ -852,7 +858,9 @@ String readBodyManual(T& client, bool chunked, size_t contentLength) {
         delay(1);
       }
     }
+    finished = !capped;  // close-delimited; natural EOF or 5 s idle
   }
+  if (complete) *complete = finished;
   return body;
 }
 
@@ -1014,11 +1022,12 @@ int relayUpstream(T& client, ProxyJob* job, NetworkClient& c,
       job->responseStarted = true;  // 200 head is about to hit the client
       sent = streamResponseManual(client, chunked, contentLength, c, &pt, &ct, &tt);
     } else {
-      String resp = readBodyManual(client, chunked, contentLength);
+      bool complete = false;
+      String resp = readBodyManual(client, chunked, contentLength, &complete);
       // Non-streaming bodies are buffered in RAM: if the provider sent more
-      // than the device can hold, never relay a silently truncated "200".
-      bool truncated = !chunked && contentLength > 0 &&
-                       (size_t)resp.length() < contentLength;
+      // than the device can hold (or died before finishing), never relay a
+      // silently truncated "200".
+      bool truncated = (chunked || contentLength > 0) && !complete;
       if (truncated) {
         client.stop();
         return -2;  // upstream body could not be buffered in full

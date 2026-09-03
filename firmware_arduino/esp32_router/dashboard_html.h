@@ -264,6 +264,12 @@ html[data-theme="light"] #toast .toast{background:rgba(255,255,255,.92);border-c
 html[data-theme="light"] .heapbar .track{background:rgba(23,34,66,.12)}
 html[data-theme="light"] table td,table th{border-color:rgba(23,34,66,.08)}
 html[data-theme="light"] .kv .val.open{color:var(--ok)}
+select option{color:#101828;background:#f6f7fb}
+select{appearance:none;-webkit-appearance:none;-moz-appearance:none;
+  background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23838fae' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 12px center;padding-right:30px}
+select:disabled{opacity:.65}
+.pg-hint{font-size:12px;color:var(--muted);margin-top:6px;line-height:1.5}
 </style>
 </head>
 <body>
@@ -329,6 +335,7 @@ html[data-theme="light"] .kv .val.open{color:var(--ok)}
         <div>
           <label>Model</label>
           <select id="pg-model"></select>
+          <div class="pg-hint" id="pg-hint"></div>
         </div>
         <div class="chat">
           <input id="pg-input" placeholder="Type a prompt…" onkeydown="if(event.key==='Enter')playgroundSend()">
@@ -553,10 +560,26 @@ function appendLive(d){
 /* ---------- Playground ---------- */
 function renderPlayground(){
   var sel=document.getElementById('pg-model');sel.innerHTML='';
+  var n=0;
   S.providers.forEach(function(p){
     if(!p.active)return;
-    (p.models||[]).forEach(function(m){var o=document.createElement('option');o.value=m;o.textContent=m;sel.appendChild(o)});
+    (p.models||[]).forEach(function(m){var o=document.createElement('option');o.value=m;o.textContent=m;sel.appendChild(o);n++});
   });
+  var hint=document.getElementById('pg-hint');
+  if(!n){
+    var o=document.createElement('option');o.value='';o.disabled=true;o.textContent='No cached models';
+    sel.appendChild(o);
+    if(hint){hint.style.display='block';
+      hint.innerHTML='No models cached. <a href="#" onclick="syncAllModels();return false">Sync models now</a>, or manage them in the Providers tab.';}
+  } else if(hint){hint.style.display='none'}
+}
+
+async function syncAllModels(){
+  for(var i=0;i<S.providers.length;i++){
+    if(!S.providers[i].active)continue;
+    try{await post('/api/providers/fetch',{id:S.providers[i].id})}catch(e){}
+  }
+  await load();
 }
 
 async function playgroundSend(){
@@ -721,7 +744,20 @@ async function rebootDevice(){
 /* ---------- render + init ---------- */
 var uptimeBase=0, uptimeAt=0;
 function render(){renderOverview();renderUsage();renderPlayground();renderProviders();renderSettings()}
-async function load(){try{S=await api('/api/state');uptimeBase=S.stats.uptime_s;uptimeAt=Date.now();render();connectWs()}catch(e){toast('Failed to load: '+e.message,'error')}}
+var autoTried={};
+async function maybeAutoSync(){
+  var need=false;
+  S.providers.forEach(function(p){if(p.active&&p.has_key&&!(p.models&&p.models.length)&&!autoTried[p.id]){autoTried[p.id]=1;need=true}});
+  if(!need)return;
+  for(var i=0;i<S.providers.length;i++){
+    var p=S.providers[i];
+    if(p.active&&p.has_key&&!(p.models&&p.models.length)){
+      try{await post('/api/providers/fetch',{id:p.id})}catch(e){}
+    }
+  }
+  S=await api('/api/state');render();
+}
+async function load(){try{S=await api('/api/state');uptimeBase=S.stats.uptime_s;uptimeAt=Date.now();render();maybeAutoSync();connectWs()}catch(e){toast('Failed to load: '+e.message,'error')}}
 
 var ws;
 function connectWs(){

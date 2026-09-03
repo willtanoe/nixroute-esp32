@@ -354,6 +354,7 @@ void saveProviders() {
     o["url"] = g_providers[i].url;
     o["key"] = g_providers[i].key;
     o["active"] = g_providers[i].active;
+    o["models"] = g_providerModels[i];  // persist model cache with the provider
   }
   String raw;
   serializeJson(doc, raw);
@@ -366,23 +367,26 @@ void loadProviders() {
   prefs.begin("gateway", true);
   String raw = prefs.getString("providers", "");
   prefs.end();
-  g_providerCount = 0;
+  int idx = 0;
   if (raw.length()) {
     JsonDocument doc;
     if (!deserializeJson(doc, raw)) {
       JsonArray arr = doc.as<JsonArray>();
       for (JsonVariant v : arr) {
-        if (g_providerCount >= MAX_PROVIDERS) break;
-        Provider& p = g_providers[g_providerCount++];
+        if (idx >= MAX_PROVIDERS) break;
         JsonObject o = v.as<JsonObject>();
+        Provider& p = g_providers[idx];
         p.id = o["id"] | "";
         p.name = o["name"] | p.id.c_str();
         p.url = o["url"] | "";
         p.key = o["key"] | "";
         p.active = o["active"] | true;
+        g_providerModels[idx] = o["models"] | "";
+        idx++;
       }
     }
   }
+  g_providerCount = idx;
   bool healed = false;
   for (int i = 0; i < g_providerCount; i++) {
     String sid = slugify(g_providers[i].name);
@@ -392,7 +396,9 @@ void loadProviders() {
     }
   }
   if (healed) saveProviders();
+  // Legacy fallback: model caches stored under separate NVS keys.
   for (int i = 0; i < g_providerCount; i++) {
+    if (g_providerModels[i].length()) continue;
     String k = "models_" + g_providers[i].id;
     prefs.begin("gateway", true);
     g_providerModels[i] = prefs.getString(k.c_str(), "");
@@ -533,6 +539,7 @@ int fetchModels(int idx) {
   prefs.begin("gateway", false);
   prefs.putString(k.c_str(), ids);
   prefs.end();
+  saveProviders();  // also persist the cache inline with the provider config
   return count;
 }
 

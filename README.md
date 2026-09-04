@@ -45,12 +45,14 @@ onion you expose over a VPN, not the open internet.
 - **Multi-provider routing** — up to 16 providers, each with a name, base URL, and
   key. Model lists are fetched automatically and cached in NVS.
 - **Smart failover** — a request cascades to the next candidate when a provider is
-  unreachable or fails; the circuit breaker parks a repeatedly-failing provider in
-  a short cooldown instead of hammering it.
+  unreachable, stalls, or fails. Fast upstream resets and stalls are detected in
+  seconds, keeping the gateway responsive. The circuit breaker parks a repeatedly
+  failing provider in a short cooldown instead of hammering it.
 - **Round-robin** — when several providers serve the same model id, traffic is
   rotated across them to spread quota and rate limits.
 - **Namespaced models** — models are exposed as `nx/<provider>/<model>` (for example
-  `nx/geraikita/claude-opus-5`), so routing is always unambiguous.
+  `nx/geraikita/claude-opus-5`), so routing is always unambiguous. Unknown provider
+  namespaces immediately return `404`.
 - **Token usage tracking** — prompt / completion / total tokens per request, a
   per-model breakdown, and a rolling log of recent calls. Understands both OpenAI
   (`prompt_tokens`…) and Anthropic-style (`input_tokens`…) usage objects.
@@ -60,8 +62,8 @@ onion you expose over a VPN, not the open internet.
   external dependencies, served from flash and fully usable offline on your LAN.
   Liquid-glass dark theme by default, with a light mode toggle (remembered per
   browser).
-- **Persistence** — providers, keys, Wi-Fi, API tokens, and the admin password live
-  in NVS via `Preferences`.
+- **Persistence** — providers, keys, model caches, Wi-Fi, API tokens, and the admin
+  password live in NVS via `Preferences`.
 - **Auth** — optional Bearer tokens for `/v1/*` and a random per-boot session cookie
   for the admin area (no more forgeable static cookie).
 - **No secrets in code** — Wi-Fi and provider keys are set from the dashboard.
@@ -89,6 +91,8 @@ assets/
   nixroute.svg        # brand logo
   screenshots/        # dashboard screenshots
 tests/scripts/        # host-side HTTP smoke tests (no hardware needed)
+tools/loadtest/       # adversarial stress-testing harness & mock upstream
+TEST_REPORT.md        # stress test results, operating envelope, and bug fixes
 ```
 
 ---
@@ -254,6 +258,10 @@ EOF
   `Authorization: Bearer <token>` (compared in constant time).
 - The admin area uses a random per-boot session cookie, and the admin password is
   never printed to the serial log.
+- **CSRF protection** — Admin state-changing `POST` requests require a custom
+  `X-NixRoute: 1` header to block cross-site request forgery.
+- **Anti-stall limits** — Chat uploads are capped at 2 MB and use strict read
+  timeouts so a slow client cannot stall the web server.
 - Flash encryption is not enabled; a device in someone's hands can be read. Treat
   the board like a physical key.
 
@@ -269,17 +277,23 @@ python tests/scripts/test_openai_compat.py --host 192.168.110.187 --model nx/ger
 python tests/scripts/test_admin_api.py --host 192.168.110.187 --password 123456
 ```
 
+Adversarial stress-testing against a mock upstream:
+
+```bash
+python tools/loadtest/mock_upstream.py --port 8080
+python tools/loadtest/stress.py --host 192.168.110.187
+```
+
 ---
 
 ## Known limitations
 
 - One chat request at a time (single-flight) — by design, to keep the proxy and the
   dashboard responsive on a small MCU; overlapping requests get `503`.
-- The WebServer task and the proxy task share the client socket while a response
-  streams. It works, but a client that drops mid-stream is detected via write
-  failures (`delivered=0` in the serial log) rather than being handled instantly.
 - Unbuffered non-streaming replies are capped (~192 KB) so a runaway completion
-  can't OOM the gateway.
+  can't OOM the gateway. If an upstream reply exceeds this (or is truncated),
+  the gateway fails cleanly with `502` to avoid silent data corruption. Prefer
+  `stream: true` for large completions.
 
 ---
 

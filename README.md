@@ -90,7 +90,7 @@ firmware_arduino/esp32_router/
 assets/
   nixroute.svg        # brand logo
   screenshots/        # dashboard screenshots
-tests/scripts/        # host-side HTTP smoke tests (no hardware needed)
+tests/scripts/        # host-side HTTP smoke tests (need a running board)
 tools/loadtest/       # adversarial stress-testing harness & mock upstream
 TEST_REPORT.md        # stress test results, operating envelope, and bug fixes
 ```
@@ -269,7 +269,7 @@ EOF
 
 ## Testing
 
-Host-side smoke tests (no hardware changes needed; pass your board's IP):
+Host-side smoke tests (read-only for the board; pass your board's IP):
 
 ```bash
 python tests/scripts/test_health.py --host 192.168.110.187

@@ -10,6 +10,7 @@ Usage:
 import argparse
 import json
 import urllib.request
+import urllib.parse
 import http.cookiejar
 
 def parse_args():
@@ -27,9 +28,21 @@ def login(base, password):
     data = f"password={urllib.parse.quote(password)}".encode()
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/x-www-form-urlencoded"})
     print(f"POST {url}")
+    r = urllib.request.urlopen(req, timeout=5)  # the 303 redirect lands on /
+    assert r.status == 200, f"login did not land on the dashboard (status {r.status})"
+    cookie = r.headers.get("Set-Cookie", "")
+    assert "esp_auth=" in cookie, "login did not set the esp_auth session cookie"
+    print("login OK, session cookie set")
+    return cookie
+
+def login_bad_password(base):
+    url = f"{base}/admin/login"
+    data = b"password=definitely-wrong"
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/x-www-form-urlencoded"})
     r = urllib.request.urlopen(req, timeout=5)
-    print(f"status {r.status} (expect 303)")
-    return r.headers.get("Set-Cookie", "")
+    cookie = r.headers.get("Set-Cookie", "")
+    assert "esp_auth=" not in cookie, "wrong password must not set a session cookie"
+    print("wrong-password check OK (no session cookie issued)")
 
 def state(base, cookie):
     req = urllib.request.Request(f"{base}/api/state", headers={"Cookie": cookie})
@@ -56,9 +69,9 @@ def add_provider(base, cookie, name, url, key):
         return data
 
 if __name__ == "__main__":
-    import urllib.parse
     a = parse_args()
     base = f"http://{a.host}:{a.port}"
+    login_bad_password(base)
     cookie = login(base, a.password)
     state(base, cookie)
     if a.add_name and a.add_url:

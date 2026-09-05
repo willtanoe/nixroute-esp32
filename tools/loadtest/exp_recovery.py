@@ -5,14 +5,23 @@ Adds a temporary mock provider, measures how long the single-flight gateway
 stays busy after (a) an upstream RST and (b) a client disconnecting mid-stream,
 then removes the mock provider.
 """
-import http.client, json, time, threading, sys
-sys.path.insert(0, __import__("os").path.dirname(__file__))
+import argparse, http.client, json, time, threading, sys, os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from stress import (admin_login, a_req, add_provider, del_provider, chat_once,
                     health, ADMIN_COOKIE)
 
 HOST = "192.168.110.187"
 ADMIN = "123456"
 PC = "192.168.110.107"
+
+
+def parse_args():
+    p = argparse.ArgumentParser(description="Upstream-reset / mid-stream disconnect recovery experiment")
+    p.add_argument("--host", default=HOST)
+    p.add_argument("--admin-password", default=ADMIN)
+    p.add_argument("--mock-pc", default=PC)
+    p.add_argument("--mock-port", type=int, default=9000)
+    return p.parse_args()
 
 
 def normal_chat(token):
@@ -34,9 +43,28 @@ def poll_until_good(token, secs=90):
 
 
 def main():
+    global HOST, ADMIN, PC
+    a = parse_args()
+    HOST, ADMIN, PC = a.host, a.admin_password, a.mock_pc
+
     admin_login(HOST, ADMIN)
-    token = a_req(HOST, "GET", "/api/state")[1]["token"]["list"][0]
-    add_provider(HOST, "mockok", "http://%s:9000/v1" % PC)
+    st, j = a_req(HOST, "GET", "/api/state")
+    toks = ((j or {}).get("token") or {}).get("list") or []
+    if not toks:
+        raise SystemExit("no API tokens configured on the device; create one first")
+    token = toks[0]
+    try:
+        run_experiments(token, a.mock_port)
+    finally:
+        # never leave the mock provider configured, whatever blew up above
+        del_provider(HOST, "mockok")
+        time.sleep(0.3)
+        st, j = a_req(HOST, "GET", "/api/state")
+        print("\nproviders after:", [p["id"] for p in (j or {}).get("providers", [])], flush=True)
+
+
+def run_experiments(token, mock_port):
+    add_provider(HOST, "mockok", "http://%s:%d/v1" % (PC, mock_port))
     time.sleep(0.5)
     print("healthy check:", normal_chat(token), flush=True)
 
@@ -82,11 +110,6 @@ def main():
     good = [(t, st) for (t, st) in rec if st == 200]
     print("  samples:", rec[:8], flush=True)
     print("  first-200 at: %.2fs" % good[0][0] if good else "  NO RECOVERY IN 40s", flush=True)
-
-    del_provider(HOST, "mockok")
-    time.sleep(0.3)
-    st, j = a_req(HOST, "GET", "/api/state")
-    print("\nproviders after:", [p["id"] for p in j["providers"]], flush=True)
 
 
 if __name__ == "__main__":

@@ -42,6 +42,11 @@
 #define MAX_USAGE_LOG    20
 #define MAX_USAGE_MODELS 32
 #define PROXY_QUEUE_LEN  4
+// Bodies up to this size are buffered in the job so an upstream HTTP error can
+// be retried on the next candidate; bigger bodies stream zero-copy and can
+// only fail over before the connection comes up.
+#define BODY_REPLAY_LIMIT (32 * 1024)
+#define LAT_WINDOW        32
 
 // ---------------------------------------------------------------------------
 // Data model
@@ -88,6 +93,8 @@ struct ProxyJob {
   int n;
   ProviderSnap providers[MAX_PROVIDERS];
   NetworkClient client;
+  String bodyBuf;                 // full request body while it fits BODY_REPLAY_LIMIT
+  volatile bool bodyReplayable;   // false once the body outgrew the replay cap
   volatile bool bodyDone;         // set by the raw handler once the body is complete
   volatile bool aborted;          // set by the raw handler when the upload is aborted
   volatile bool bodySent;         // set once the full body has been relayed upstream
@@ -107,7 +114,12 @@ WebServer server(80);
 DNSServer dnsServer;
 bool g_apMode = false;
 uint32_t g_reqTotal = 0, g_reqOk = 0, g_reqFail = 0;
-uint32_t g_latencySum = 0;
+// Moving window of the last delivered-request latencies, so avg_latency_ms
+// stays meaningful as the uptime grows instead of diluting toward the mean
+// since boot.
+uint32_t g_latWin[LAT_WINDOW];
+int g_latWinIdx = 0, g_latWinCount = 0;
+uint32_t g_latWinSum = 0;
 uint32_t g_rr = 0;                         // round-robin cursor
 unsigned long g_bootMs = 0;
 String g_lastFetchError;
@@ -253,6 +265,7 @@ void recordUsage(const char* model, uint32_t pt, uint32_t ct, uint32_t tt,
       if (strcmp(g_modelUsage[i].model, model) == 0) {
         g_modelUsage[i].requests++;
         g_modelUsage[i].tokens += tt;
+        g_usageDirty = true;  // only successful usage changes what NVS stores
         statsUnlock();
         return;
       }
@@ -263,9 +276,9 @@ void recordUsage(const char* model, uint32_t pt, uint32_t ct, uint32_t tt,
       m.model[sizeof(m.model) - 1] = 0;
       m.requests = 1;
       m.tokens = tt;
+      g_usageDirty = true;
     }
   }
-  g_usageDirty = true;
   statsUnlock();
 }
 
@@ -1064,7 +1077,7 @@ int relayUpstream(T& client, ProxyJob* job, NetworkClient& c,
     return 0;  // body not consumed yet -> retryable
   }
 
-  // request headers (chunked upload)
+  // request headers
   client.printf("POST %s HTTP/1.1\r\n", path.c_str());
   client.printf("Host: %s\r\n", host.c_str());
   client.print("Content-Type: application/json\r\n");
@@ -1078,37 +1091,64 @@ int relayUpstream(T& client, ProxyJob* job, NetworkClient& c,
     client.print("HTTP-Referer: http://" + WiFi.localIP().toString() + "\r\n");
     client.print("X-Title: NixRoute\r\n");
   }
-  client.print("Transfer-Encoding: chunked\r\n");
-  client.print("Connection: close\r\n\r\n");
+  client.print("Connection: close\r\n");
+  bool replay = job->bodyReplayable;
+  if (replay) {
+    client.printf("Content-Length: %u\r\n\r\n", (unsigned)job->bodyBuf.length());
+  } else {
+    client.print("Transfer-Encoding: chunked\r\n\r\n");
+  }
 
-  // stream the request body directly using chunked encoding
+  // Send the request body: replayed verbatim from the buffer when it fit the
+  // cap (this is what makes HTTP-error failover possible), otherwise pipelined
+  // chunk-by-chunk from the stream buffer with zero full buffering.
   uint8_t buf[1024];
-  for (;;) {
-    if (job->aborted) {  // origin client vanished mid-upload
-      client.stop();
-      latMs = millis() - t0;
-      return -1;
-    }
-    size_t r = xStreamBufferReceive(g_bodyStream, buf, sizeof(buf), pdMS_TO_TICKS(200));
-    if (r > 0) {
-      client.printf("%x\r\n", (unsigned)r);
-      if (client.write(buf, r) != r) {  // upstream socket closed mid-body
+  if (replay) {
+    const String& b = job->bodyBuf;
+    size_t off = 0;
+    while (off < b.length()) {
+      if (job->aborted) {  // origin client vanished mid-upload
         client.stop();
         latMs = millis() - t0;
         return -1;
       }
-      client.print("\r\n");
-    } else if (job->bodyDone) {
-      break;  // whole body relayed
+      size_t n = b.length() - off;
+      if (n > sizeof(buf)) n = sizeof(buf);
+      if (client.write((const uint8_t*)b.c_str() + off, n) != n) {  // upstream closed mid-body
+        client.stop();
+        latMs = millis() - t0;
+        return -1;
+      }
+      off += n;
     }
+  } else {
+    for (;;) {
+      if (job->aborted) {  // origin client vanished mid-upload
+        client.stop();
+        latMs = millis() - t0;
+        return -1;
+      }
+      size_t r = xStreamBufferReceive(g_bodyStream, buf, sizeof(buf), pdMS_TO_TICKS(200));
+      if (r > 0) {
+        client.printf("%x\r\n", (unsigned)r);
+        if (client.write(buf, r) != r) {  // upstream socket closed mid-body
+          client.stop();
+          latMs = millis() - t0;
+          return -1;
+        }
+        client.print("\r\n");
+      } else if (job->bodyDone) {
+        break;  // whole body relayed
+      }
+    }
+    if (job->aborted) {  // abort raced with the final body chunk
+      client.stop();
+      latMs = millis() - t0;
+      return -1;
+    }
+    client.print("0\r\n\r\n");
   }
-  if (job->aborted) {  // abort raced with the final body chunk
-    client.stop();
-    latMs = millis() - t0;
-    return -1;
-  }
-  client.print("0\r\n\r\n");
-  job->bodySent = true;  // body consumed: no failover is possible anymore
+  job->bodySent = true;  // body consumed on this attempt
 
   // read response
   bool chunked;
@@ -1196,6 +1236,13 @@ void processProxyJob(ProxyJob* job) {
   uint32_t pt = 0, ct = 0, tt = 0, latMs = 0;
   uint32_t start = g_rr++ % job->n;
 
+  // A buffered (replayable) body must be complete before the first upstream
+  // attempt; a streaming body is pipelined and needs no wait. The wait ends
+  // early if the body outgrows the replay cap mid-upload (mode switch to
+  // streaming) or the client aborts.
+  while (!job->bodyDone && !job->aborted && job->bodyReplayable)
+    vTaskDelay(pdMS_TO_TICKS(5));
+
   for (int k = 0; k < job->n && !job->aborted; k++) {
     const ProviderSnap& p = job->providers[(start + k) % job->n];
     String fullModel = p.id + "/" + job->upstreamModel;
@@ -1206,9 +1253,12 @@ void processProxyJob(ProxyJob* job) {
     usedModel = fullModel;
     if (sent) delivered = true;
     if (code >= 200 && code < 300) { ok = true; break; }
-    // Fail over ONLY when the connection died before any body byte was relayed
-    // (code == 0 && !bodySent). HTTP errors or post-body failures are final.
-    if (code == 0 && !job->bodySent) continue;
+    // Fail over only when it is safe to retry:
+    //  - the connection never came up (the body is untouched), or
+    //  - the provider answered an HTTP error before anything was relayed to
+    //    the client AND the body was small enough to replay verbatim.
+    if (code == 0) continue;
+    if (code >= 400 && job->bodyReplayable && !job->responseStarted) continue;
     break;
   }
 
@@ -1224,7 +1274,7 @@ void processProxyJob(ProxyJob* job) {
   if (!ok && !aborted && !job->responseStarted) {
     // Never append a JSON error after a 200/SSE head was already streamed;
     // in that case just close the connection (Connection: close is set).
-    if (lastCode == 429) writeErrorRaw(c, 429, "all providers rate-limited");
+    if (lastCode == 429) writeErrorRaw(c, 429, job->n > 1 ? "all providers rate-limited" : "provider rate-limited");
     else if (lastCode >= 500 || lastCode <= 0) writeErrorRaw(c, 502, "all providers failed");
     else writeErrorRaw(c, lastCode > 0 ? lastCode : 502, "upstream error");
   }
@@ -1251,7 +1301,15 @@ void processProxyJob(ProxyJob* job) {
   statsLock();
   if (ok && delivered) {
     g_reqOk++;
-    g_latencySum += millis() - t0;
+    uint32_t lat = millis() - t0;
+    if (g_latWinCount < LAT_WINDOW) {
+      g_latWinSum += lat;
+      g_latWinCount++;
+    } else {
+      g_latWinSum = g_latWinSum - g_latWin[g_latWinIdx] + lat;
+    }
+    g_latWin[g_latWinIdx] = lat;
+    g_latWinIdx = (g_latWinIdx + 1) % LAT_WINDOW;
   } else if (!aborted) {
     g_reqFail++;
   }
@@ -1401,9 +1459,10 @@ void handleHealth() {
   String ip = apMode ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
   // Snapshot the cross-core counters atomically before rendering.
   uint32_t rTotal, rOk, rFail, tPrompt, tComp, tTotal;
-  uint32_t latSum;
+  uint32_t latSum, latN;
   statsLock();
-  rTotal = g_reqTotal; rOk = g_reqOk; rFail = g_reqFail; latSum = g_latencySum;
+  rTotal = g_reqTotal; rOk = g_reqOk; rFail = g_reqFail;
+  latSum = g_latWinSum; latN = g_latWinCount;
   tPrompt = g_totalPrompt; tComp = g_totalCompletion; tTotal = g_totalTokens;
   statsUnlock();
 
@@ -1419,7 +1478,7 @@ void handleHealth() {
   doc["requests_total"] = rTotal;
   doc["requests_ok"] = rOk;
   doc["requests_fail"] = rFail;
-  doc["avg_latency_ms"] = rOk ? (latSum / rOk) : 0;
+  doc["avg_latency_ms"] = latN ? (latSum / latN) : 0;
   doc["local_token_set"] = g_tokenCount > 0;
   doc["providers"] = g_providerCount;
   doc["tokens"]["prompt"] = tPrompt;
@@ -1593,6 +1652,7 @@ bool detectAndStream() {
   job->upstreamModel = upstreamModel;
   job->isStream = isStream;
   job->n = n;
+  job->bodyReplayable = true;  // buffer for replay until the body proves too big
   job->bodyDone = false;
   job->aborted = false;
   job->bodySent = false;
@@ -1617,14 +1677,39 @@ bool detectAndStream() {
   g_ownsJob = true;
   g_currentJob = job;
 
-  // stream the rewritten head into the body pipe, then release the head buffer
-  xStreamBufferSend(g_bodyStream, (const uint8_t*)g_head.c_str(), g_head.length(), pdMS_TO_TICKS(10000));
+  // Start the replay buffer with the rewritten head; body chunks keep
+  // appending to it (see feedBodyChunk) while it fits BODY_REPLAY_LIMIT. Only
+  // when the body outgrows the cap does everything move into the zero-copy
+  // stream pipe.
+  job->bodyBuf = g_head;
   g_head = "";
   return true;
 }
 
 // Raw body handler: streams the request body to the proxy task chunk-by-chunk
 // without ever buffering it fully in RAM.
+
+// Route one body chunk to the in-flight job. While the body still fits the
+// replay cap it is appended to job->bodyBuf (so an upstream HTTP error can be
+// retried on the next candidate); the moment it outgrows the cap the whole
+// buffer is handed to the zero-copy stream pipe and the rest pipelines there.
+// Runs on the web task; the proxy task only reads bodyBuf after bodyDone.
+static void feedBodyChunk(const uint8_t* buf, size_t len) {
+  ProxyJob* job = g_currentJob;
+  if (!job) return;
+  if (job->bodyReplayable) {
+    if (job->bodyBuf.length() + len <= BODY_REPLAY_LIMIT && ESP.getFreeHeap() >= 40 * 1024) {
+      job->bodyBuf.concat((const char*)buf, len);
+      return;
+    }
+    job->bodyReplayable = false;
+    xStreamBufferSend(g_bodyStream, (const uint8_t*)job->bodyBuf.c_str(),
+                      job->bodyBuf.length(), pdMS_TO_TICKS(10000));
+    job->bodyBuf = "";  // free the buffer, streaming from here on
+  }
+  xStreamBufferSend(g_bodyStream, buf, len, pdMS_TO_TICKS(10000));
+}
+
 void handleChatRaw() {
   HTTPRaw& raw = server.raw();
 
@@ -1702,12 +1787,11 @@ void handleChatRaw() {
       g_headDone = true;
       // Only relay bytes past the head window when a job actually started;
       // otherwise they would poison the shared pipe for the next request.
-      if (started && overflow)
-        xStreamBufferSend(g_bodyStream, buf + toHead, overflow, pdMS_TO_TICKS(10000));
+      if (started && overflow) feedBodyChunk(buf + toHead, overflow);
     }
     // model not found yet -> keep buffering until it appears or the head cap
   } else {
-    xStreamBufferSend(g_bodyStream, buf, len, pdMS_TO_TICKS(10000));
+    feedBodyChunk(buf, len);
   }
 }
 
@@ -1743,9 +1827,10 @@ void handleApiState() {
   String ip = apMode ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
 
   // Snapshot the cross-core counters atomically before rendering.
-  uint32_t rTotal, rOk, rFail, latSum;
+  uint32_t rTotal, rOk, rFail, latSum, latN;
   statsLock();
-  rTotal = g_reqTotal; rOk = g_reqOk; rFail = g_reqFail; latSum = g_latencySum;
+  rTotal = g_reqTotal; rOk = g_reqOk; rFail = g_reqFail;
+  latSum = g_latWinSum; latN = g_latWinCount;
   statsUnlock();
 
   JsonDocument doc;
@@ -1766,7 +1851,7 @@ void handleApiState() {
   doc["stats"]["requests_total"] = rTotal;
   doc["stats"]["requests_ok"] = rOk;
   doc["stats"]["requests_fail"] = rFail;
-  doc["stats"]["avg_latency_ms"] = rOk ? (latSum / rOk) : 0;
+  doc["stats"]["avg_latency_ms"] = latN ? (latSum / latN) : 0;
 
   statsLock();
   JsonObject usg = doc["usage"].to<JsonObject>();

@@ -405,7 +405,10 @@ select:disabled{opacity:.65}
 <div id="toast"></div>
 
 <script>
-var S=null;
+var S=null, tokenFull=[];
+// /api/state only carries masked tokens; fetch the plaintext list once (and
+// after token changes) for the playground, snippets and copy buttons.
+async function revealTokens(){try{var r=await api('/api/tokens');tokenFull=(r&&r.tokens)||[]}catch(e){tokenFull=[]}}
 function $(s){return document.querySelector(s)}
 function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
 function toast(msg,type){var t=document.createElement('div');t.className='toast '+(type||'');t.textContent=msg;
@@ -425,7 +428,7 @@ async function api(path,opts){opts=opts||{};
   }}
 function post(path,body){return api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})})}
 function epUrl(){return S&&S.wifi.ip?('http://'+S.wifi.ip+'/v1'):''}
-function authHeaders(){var h={'Content-Type':'application/json'};if(S&&S.token.list&&S.token.list.length)h['Authorization']='Bearer '+S.token.list[0];return h}
+function authHeaders(){var h={'Content-Type':'application/json'};if(tokenFull.length)h['Authorization']='Bearer '+tokenFull[0];return h}
 
 function show(v){
   document.querySelectorAll('.view').forEach(function(e){e.classList.remove('on')});
@@ -467,9 +470,9 @@ function renderOverview(){
   document.getElementById('hdr-heap-fill').style.width=pct+'%';
   document.getElementById('endpoint-url').textContent=epUrl()||'http://<ip>/v1';
   var epTok=document.getElementById('ep-token');
-  if(epTok){var tl=S.token&&S.token.list;
-    epTok.textContent=(tl&&tl.length)?tl[0]:'open (no auth)';
-    epTok.className='val'+(tl&&tl.length?'':' open');}
+  if(epTok){
+    epTok.textContent=tokenFull.length?tokenFull[0]:'open (no auth)';
+    epTok.className='val'+(tokenFull.length?'':' open');}
   document.getElementById('foot-ver').textContent=S.version;
   renderSnippets();
   var op=document.getElementById('ov-providers');op.innerHTML='';
@@ -490,7 +493,7 @@ function renderOverview(){
 }
 
 function renderSnippets(){
-  var base=epUrl();var ip=S.wifi.ip||'<ip>';var tk=(S.token.list&&S.token.list.length)?S.token.list[0]:'<token>';
+  var base=epUrl();var ip=S.wifi.ip||'<ip>';var tk=tokenFull.length?tokenFull[0]:'<token>';
   var snippets=[
     {tag:'Cursor', code:'"openai": {"baseURL": "'+base+'", "apiKey": "'+tk+'"}'},
     {tag:'Claude Code', code:'export OPENAI_BASE_URL='+base+' OPENAI_API_KEY='+tk},
@@ -709,13 +712,16 @@ async function removeProvider(id){
 /* ---------- Settings ---------- */
 function renderSettings(){
   var tk=S.token||{};
-  var arr=tk.list||[];
+  var arr=tk.list||[];  // masked values, display only
   var list=document.getElementById('token-list');
   if(!arr.length){list.innerHTML='<div class="empty">No tokens. Client access is open (no auth).</div>'}
   else{
     var h='';
-    arr.forEach(function(t){
-      h+='<div class="snippet"><code>'+esc(t)+'</code><button class="btn ghost sm" onclick="copyText(this.parentNode.querySelector(\'code\').textContent)">Copy</button><button class="btn danger sm" onclick="deleteToken(\''+esc(t)+'\')">Delete</button></div>';
+    arr.forEach(function(t,i){
+      var full=tokenFull[i]||'';
+      h+='<div class="snippet"><code>'+esc(t)+'</code>'+
+        '<button class="btn ghost sm" onclick="copyText(tokenFull['+i+']||\'\')">Copy</button>'+
+        '<button class="btn danger sm" onclick="deleteToken(tokenFull['+i+']||\'\')">Delete</button></div>';
     });
     list.innerHTML=h;
   }
@@ -758,7 +764,7 @@ async function maybeAutoSync(){
   }
   S=await api('/api/state');render();
 }
-async function load(){try{S=await api('/api/state');uptimeBase=S.stats.uptime_s;uptimeAt=Date.now();render();maybeAutoSync();connectWs()}catch(e){toast('Failed to load: '+e.message,'error')}}
+async function load(){try{S=await api('/api/state');await revealTokens();uptimeBase=S.stats.uptime_s;uptimeAt=Date.now();render();maybeAutoSync();connectWs()}catch(e){toast('Failed to load: '+e.message,'error')}}
 
 var ws, wsRetry=1000;
 function connectWs(){

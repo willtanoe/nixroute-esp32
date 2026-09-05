@@ -10,11 +10,12 @@ Behaviours are selected by the *model* id in the chat request:
   mockreset   accepts body then RSTs the connection
   mockmid     streams some SSE then abruptly dies mid-stream
   mockbig     non-streaming ~200 KB JSON
-  mockhuge    streaming SSE ~300 KB total, many chunks
+  mockhuge    streaming SSE ~197 KB total, many chunks
   mockchunks  chunked response with one very large chunk (> buffer size)
   mockblob    returns the request body size + hash in a tiny reply
 
 GET /v1/models returns all of the above ids.
+GET /stats returns the live request counters.
 """
 import argparse, json, time, hashlib, socket, threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -118,6 +119,9 @@ class Handler(BaseHTTPRequestHandler):
                 COUNTER["models"] += 1
             self._send(200, {"object": "list", "data": [
                 {"id": m, "object": "model", "owned_by": "mock"} for m in MODELS]})
+        elif self.path.startswith("/stats"):
+            with _lock:
+                self._send(200, dict(COUNTER))
         else:
             self._send(200, {"status": "mock-up ok"})
 

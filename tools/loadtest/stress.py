@@ -64,6 +64,11 @@ def a_req(host, method, path, body=None, t=60):
             r = _admin[0].getresponse(); data = r.read()
             return r.status, json.loads(data.decode() or "null")
         except Exception as e:
+            try:
+                _admin[0].close()
+            except Exception:
+                pass
+            _admin[0] = None
             return -1, {"error": str(e)}
 
 
@@ -393,16 +398,22 @@ def scenario_failover(args, token):
     out = {"name": "failover", "results": {}}
     # only dead + ok mocks active; geraikita disabled for isolation
     toggle_provider(args.host, "geraikita", False)
-    time.sleep(0.3)
     res = []
-    mon = HeapMon(args.host, "fo"); mon.start()
-    for i in range(16):
-        st, raw, dur = chat_once(args.host, token, "zzz-shared-fallback-model", {"stream": False}, t=30)
-        res.append(st)
-    mon.stopmon()
-    toggle_provider(args.host, "geraikita", True)
+    mon = None
+    try:
+        time.sleep(0.3)
+        mon = HeapMon(args.host, "fo"); mon.start()
+        try:
+            for i in range(16):
+                st, raw, dur = chat_once(args.host, token, "zzz-shared-fallback-model", {"stream": False}, t=30)
+                res.append(st)
+        finally:
+            mon.stopmon()
+    finally:
+        # never leave the user's real provider disabled, even if the loop blew up
+        toggle_provider(args.host, "geraikita", True)
     out["results"] = {"statuses": res, "ok": res.count(200),
-                      "min_heap": mon.min_heap, "resets": len(mon.resets)}
+                      "min_heap": mon.min_heap if mon else None, "resets": len(mon.resets) if mon else 0}
     return out
 
 
@@ -436,10 +447,12 @@ def scenario_soak(args, token, seconds):
     heap_series = []
     mon = HeapMon(args.host, "soak"); mon.start()
     t_end = time.time() + seconds
-    c = http.client.HTTPConnection(args.host, 80, timeout=60)
     body = json.dumps({"model": "nx/mockok/mockhuge", "stream": True,
                        "messages": [{"role": "user", "content": "soak"}]})
     while time.time() < t_end:
+        # fresh connection per request: the gateway (and the mock) answer with
+        # Connection: close, so reusing one socket would count phantom failures
+        c = http.client.HTTPConnection(args.host, 80, timeout=60)
         try:
             c.request("POST", "/v1/chat/completions", body=body.encode(),
                       headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
@@ -455,12 +468,13 @@ def scenario_soak(args, token, seconds):
             N += 1
         except Exception as e:
             N += 1
+        finally:
+            c.close()
         if len(heap_series) < 2000:
             try:
                 heap_series.append(health(args.host)["free_heap"])
             except Exception:
                 pass
-    c.close()
     mon.stopmon()
     out["results"] = {"requests": N, "ok": ok, "heap_samples": heap_series,
                       "min_heap": min(heap_series) if heap_series else None,
@@ -495,7 +509,7 @@ def main():
         print("cannot reach admin api:", st, j); return 1
     token = j["token"]["list"][0]
     before = [p["id"] for p in j["providers"]]
-    print("host=%s token=%s providers_before=%s" % (a.host, token[:10], before))
+    print("host=%s providers_before=%s" % (a.host, before))  # never print the token
 
     # ensure temp mock providers exist
     add_provider(a.host, "mockok", mock_url)
@@ -518,42 +532,44 @@ def main():
     only = [s.strip() for s in (a.only or "").split(",") if s.strip()]
     want = lambda n: (not only) or (n in only)
 
-    if want("baseline"):
-        run("baseline", scenario_baseline, a, token)
-    if want("concurrency"):
-        run("concurrency", run_concurrency, a, token)
-    if want("streams"):
-        run("streams", scenario_streams, a, token)
-    if want("slow"):
-        run("slow", scenario_slow_client, a, token)
-    if want("disconnect"):
-        run("disconnect", scenario_disconnect, a, token)
-    if want("faults"):
-        run("faults", scenario_provider_faults, a, token)
-    if want("timeout"):
-        run("timeout", scenario_provider_timeout, a, token)
-    if want("malformed"):
-        run("malformed", scenario_malformed, a, token)
-    if want("auth"):
-        run("auth", scenario_auth, a, token)
-    if want("rapid"):
-        run("rapid", scenario_rapid_sequential, a, token)
-    if want("failover"):
-        run("failover", scenario_failover, a, token)
-    if want("reboot"):
-        run("reboot", scenario_reboot_recovery, a, token)
-    if want("soak"):
-        run("soak", scenario_soak, a, token, a.soak_sec)
-
-    # cleanup: remove temp mocks, verify original restored
-    print("\ncleanup...", flush=True)
-    del_provider(a.host, "mockok")
-    del_provider(a.host, "mockdead")
-    time.sleep(0.5)
-    st, j = a_req(a.host, "GET", "/api/state")
-    after = [p["id"] for p in (j or {}).get("providers", [])] if j else None
-    print("providers_after:", after, "(restored=%s)" % (after == before))
-    save("summary", {"before": before, "after": after, "phases": {k: _mini(v) for k, v in phases.items()}})
+    try:
+        if want("baseline"):
+            run("baseline", scenario_baseline, a, token)
+        if want("concurrency"):
+            run("concurrency", run_concurrency, a, token)
+        if want("streams"):
+            run("streams", scenario_streams, a, token)
+        if want("slow"):
+            run("slow", scenario_slow_client, a, token)
+        if want("disconnect"):
+            run("disconnect", scenario_disconnect, a, token)
+        if want("faults"):
+            run("faults", scenario_provider_faults, a, token)
+        if want("timeout"):
+            run("timeout", scenario_provider_timeout, a, token)
+        if want("malformed"):
+            run("malformed", scenario_malformed, a, token)
+        if want("auth"):
+            run("auth", scenario_auth, a, token)
+        if want("rapid"):
+            run("rapid", scenario_rapid_sequential, a, token)
+        if want("failover"):
+            run("failover", scenario_failover, a, token)
+        if want("reboot"):
+            run("reboot", scenario_reboot_recovery, a, token)
+        if want("soak"):
+            run("soak", scenario_soak, a, token, a.soak_sec)
+    finally:
+        # cleanup must run even when a phase or the harness itself crashes, or
+        # the temp mocks stay configured on the device
+        print("\ncleanup...", flush=True)
+        del_provider(a.host, "mockok")
+        del_provider(a.host, "mockdead")
+        time.sleep(0.5)
+        st, j = a_req(a.host, "GET", "/api/state")
+        after = [p["id"] for p in (j or {}).get("providers", [])] if j else None
+        print("providers_after:", after, "(restored=%s)" % (after == before))
+        save("summary", {"before": before, "after": after, "phases": {k: _mini(v) for k, v in phases.items()}})
     print("\nDONE")
 
 

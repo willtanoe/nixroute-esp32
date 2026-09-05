@@ -119,6 +119,7 @@ int g_usageWrite = 0;
 int g_usageCount = 0;
 ModelUsage g_modelUsage[MAX_USAGE_MODELS];
 int g_modelUsageCount = 0;
+volatile bool g_usageDirty = false;  // set by recordUsage, drained by the web task
 
 // FreeRTOS primitives
 QueueHandle_t g_proxyQueue = NULL;
@@ -159,11 +160,19 @@ String maskKey(const String& k) {
   return k.substring(0, 4) + "***" + k.substring(k.length() - 4);
 }
 
+// Uniform random in [0, m) via rejection sampling — a plain modulo slightly
+// biases the tail of the alphabet.
+static inline uint32_t randUniform(uint32_t m) {
+  uint32_t lim = (UINT32_MAX / m) * m, r;
+  do { r = esp_random(); } while (r >= lim);
+  return r % m;
+}
+
 String genToken() {
   static const char* cs = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
   String s;
   s.reserve(24);
-  for (int i = 0; i < 24; i++) s += cs[esp_random() % 62];
+  for (int i = 0; i < 24; i++) s += cs[randUniform(62)];
   return "nx-" + s;
 }
 
@@ -193,6 +202,15 @@ String apiRoot(const String& url) {
 int findProvider(const String& id) {
   for (int i = 0; i < g_providerCount; i++) if (g_providers[i].id == id) return i;
   return -1;
+}
+
+// First entry of a provider's comma-separated cached model list, or "" when
+// nothing is cached.
+String firstModelOf(int idx) {
+  String l = g_providerModels[idx];
+  if (!l.length()) return "";
+  int comma = l.indexOf(',');
+  return (comma < 0) ? l : l.substring(0, comma);
 }
 
 const char* reasonPhrase(int code) {
@@ -247,7 +265,55 @@ void recordUsage(const char* model, uint32_t pt, uint32_t ct, uint32_t tt,
       m.tokens = tt;
     }
   }
+  g_usageDirty = true;
   statsUnlock();
+}
+
+// Persisted usage = the aggregate totals plus the per-model rollup (the recent
+// log is ring-buffer telemetry and not worth an NVS write per request).
+void saveUsage() {
+  String raw;
+  {
+    statsLock();
+    JsonDocument doc;
+    doc["p"] = g_totalPrompt;
+    doc["c"] = g_totalCompletion;
+    doc["t"] = g_totalTokens;
+    JsonArray arr = doc["m"].to<JsonArray>();
+    for (int i = 0; i < g_modelUsageCount; i++) {
+      JsonObject o = arr.add<JsonObject>();
+      o["n"] = g_modelUsage[i].model;
+      o["r"] = g_modelUsage[i].requests;
+      o["k"] = g_modelUsage[i].tokens;
+    }
+    serializeJson(doc, raw);
+    statsUnlock();
+  }
+  prefs.begin("gateway", false);
+  prefs.putString("usage", raw);
+  prefs.end();
+}
+
+void loadUsage() {
+  prefs.begin("gateway", true);
+  String raw = prefs.getString("usage", "");
+  prefs.end();
+  if (!raw.length()) return;
+  JsonDocument doc;
+  if (deserializeJson(doc, raw)) return;
+  g_totalPrompt = doc["p"] | 0;
+  g_totalCompletion = doc["c"] | 0;
+  g_totalTokens = doc["t"] | 0;
+  g_modelUsageCount = 0;
+  for (JsonVariant v : doc["m"].as<JsonArray>()) {
+    if (g_modelUsageCount >= MAX_USAGE_MODELS) break;
+    ModelUsage& m = g_modelUsage[g_modelUsageCount++];
+    const char* n = v["n"] | "";
+    strncpy(m.model, n, sizeof(m.model) - 1);
+    m.model[sizeof(m.model) - 1] = 0;
+    m.requests = v["r"] | 0;
+    m.tokens = v["k"] | 0;
+  }
 }
 
 void bumpMetrics(const String& id, bool ok, int code, uint32_t lat) {
@@ -423,6 +489,7 @@ void loadConfig() {
     start = comma + 1;
   }
   loadProviders();
+  loadUsage();
 }
 
 void saveTokens() {
@@ -464,44 +531,48 @@ bool modelInProvider(int idx, const String& model) {
   return false;
 }
 
-int fetchModels(int idx) {
-  g_lastFetchError = "";
+// Shared GET <provider>/models used by fetchModels() and the provider ping.
+// Returns the HTTP status code, or -1 when the connection could not be made.
+// The TLS client must outlive the whole request, so it stays scope-local here
+// along with the HTTPClient that borrows it. Runs on the web task, so keep the
+// timeout short-ish — a slow provider freezes the dashboard for this long.
+int httpGetModels(int idx, int timeoutMs, String* body) {
   String url = apiRoot(g_providers[idx].url) + "/models";
   bool secure = url.startsWith("https://");
-  int code = -1;
-  String body = "";
   if (secure) {
-    // The TLS client must outlive the whole request, so keep it scope-local to
-    // this block along with the HTTPClient that borrows it.
     WiFiClientSecure client;
     client.setInsecure();
     HTTPClient http;
-    if (http.begin(client, url)) {
-      if (g_providers[idx].key.length())
-        http.addHeader("Authorization", "Bearer " + g_providers[idx].key);
-      http.setTimeout(20000);
-      code = http.GET();
-      body = http.getString();
-      http.end();
-    } else {
-      g_lastFetchError = "cannot connect to " + url;
-      return -1;
-    }
-  } else {
-    HTTPClient http;  // http:// uses HTTPClient's built-in plain TCP client
-    if (http.begin(url)) {
-      if (g_providers[idx].key.length())
-        http.addHeader("Authorization", "Bearer " + g_providers[idx].key);
-      http.setTimeout(20000);
-      code = http.GET();
-      body = http.getString();
-      http.end();
-    } else {
-      g_lastFetchError = "cannot connect to " + url;
-      return -1;
-    }
+    if (!http.begin(client, url)) return -1;
+    if (g_providers[idx].key.length())
+      http.addHeader("Authorization", "Bearer " + g_providers[idx].key);
+    http.setTimeout(timeoutMs);
+    int code = http.GET();
+    if (body) *body = http.getString();
+    http.end();
+    return code;
   }
+  HTTPClient http;  // http:// uses HTTPClient's built-in plain TCP client
+  if (!http.begin(url)) return -1;
+  if (g_providers[idx].key.length())
+    http.addHeader("Authorization", "Bearer " + g_providers[idx].key);
+  http.setTimeout(timeoutMs);
+  int code = http.GET();
+  if (body) *body = http.getString();
+  http.end();
+  return code;
+}
 
+int fetchModels(int idx) {
+  g_lastFetchError = "";
+  String url = apiRoot(g_providers[idx].url) + "/models";
+  String body = "";
+  int code = httpGetModels(idx, 10000, &body);
+
+  if (code == -1) {
+    g_lastFetchError = "cannot connect to " + url;
+    return -1;
+  }
   if (code < 200 || code >= 300) {
     g_lastFetchError = "HTTP " + String(code);
     if (body.length()) {
@@ -636,8 +707,16 @@ int resolveCandidates(String model, int* candidates, String* upstreamModel) {
     int idx = findProvider(prefix);
     if (idx >= 0) {
       if (g_providers[idx].active && !inCooldown(g_providers[idx].coolDownUntil)) {
+        String sub = model.substring(slash + 1);
+        if (sub == "auto") {
+          // "auto" is advertised for providers without a model cache; resolve it
+          // to the first cached model instead of shipping the literal upstream.
+          String first = firstModelOf(idx);
+          if (!first.length()) return -3;
+          sub = first;
+        }
         candidates[0] = idx;
-        if (upstreamModel) *upstreamModel = model.substring(slash + 1);
+        if (upstreamModel) *upstreamModel = sub;
         return 1;
       }
       // The user explicitly asked for a provider that is disabled or cooling.
@@ -1271,6 +1350,7 @@ void wsAcceptClients() {
 
   String key = "";
   bool upgrade = false;
+  bool cookieOk = false;
   // Read the handshake headers with a timeout instead of only draining whatever
   // happens to be buffered right now (headers may arrive in several segments).
   nc.setTimeout(5000);
@@ -1284,8 +1364,23 @@ void wsAcceptClients() {
     if (line.length() == 0) break;
     if (line.startsWith("Upgrade:") && line.indexOf("websocket") >= 0) upgrade = true;
     if (line.startsWith("Sec-WebSocket-Key:")) { key = line.substring(18); key.trim(); }
+    if (line.startsWith("Cookie:")) {
+      // Browsers send cookies on same-host WebSocket handshakes; reuse the
+      // admin session so live telemetry is not readable by anyone on the LAN.
+      int p = line.indexOf("esp_auth=");
+      if (p >= 0 && g_adminSession.length() > 0) {
+        int s = p + 9, e = line.indexOf(';', s);
+        if (e < 0) e = line.length();
+        cookieOk = (line.substring(s, e) == g_adminSession);
+      }
+    }
   }
-  if (!upgrade || key.length() == 0) { nc.stop(); return; }
+  if (!upgrade || key.length() == 0 || !cookieOk) {
+    nc.print("HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    nc.flush();
+    nc.stop();
+    return;
+  }
   nc.print("HTTP/1.1 101 Switching Protocols\r\n");
   nc.print("Upgrade: websocket\r\n");
   nc.print("Connection: Upgrade\r\n");
@@ -1478,6 +1573,7 @@ bool detectAndStream() {
   String upstreamModel;
   int n = resolveCandidates(model, candidates, &upstreamModel);
   if (n == -2) { g_chatError = "unknown provider in model namespace"; g_chatErrorCode = 404; return false; }
+  if (n == -3) { g_chatError = "no models cached for this provider — sync models first"; g_chatErrorCode = 404; return false; }
   if (n < 0) { g_chatError = "requested provider is disabled or cooling down"; g_chatErrorCode = 503; return false; }
   if (n == 0) { g_chatError = "no active provider available"; g_chatErrorCode = 500; return false; }
 
@@ -1534,6 +1630,7 @@ void handleChatRaw() {
 
   if (raw.status == RAW_START) {
     g_head = "";
+    g_head.reserve(MODEL_HEAD_MAX);  // one allocation, no per-chunk reallocs
     g_headDone = false;
     g_chatError = "";
     g_chatErrorCode = 0;
@@ -1554,6 +1651,9 @@ void handleChatRaw() {
       long cl = server.header("Content-Length").toInt();
       if (cl > 0 && cl > (2L * 1024 * 1024)) {
         server.client().stop();  // drop: not worth draining megabytes
+        g_chatError = "payload too large (max 2 MB)";
+        g_chatErrorCode = 413;
+        g_headDone = true;
         return;
       }
     }
@@ -1659,7 +1759,7 @@ void handleApiState() {
   doc["token"]["count"] = g_tokenCount;
   doc["token"]["max"] = MAX_TOKENS;
   JsonArray tokArr = doc["token"]["list"].to<JsonArray>();
-  for (int i = 0; i < g_tokenCount; i++) tokArr.add(g_tokens[i]);
+  for (int i = 0; i < g_tokenCount; i++) tokArr.add(maskKey(g_tokens[i]));
   doc["stats"]["uptime_s"] = millis() / 1000;
   doc["stats"]["heap"] = ESP.getFreeHeap();
   doc["stats"]["heap_total"] = ESP.getHeapSize();
@@ -1864,31 +1964,8 @@ void handleApiProviderPing() {
   int idx = findProvider(id);
   if (idx < 0) { sendError(404, "provider not found"); return; }
 
-  String url = apiRoot(g_providers[idx].url) + "/models";
-  bool secure = url.startsWith("https://");
   unsigned long t0 = millis();
-  int code = 0;
-  if (secure) {
-    WiFiClientSecure client;
-    client.setInsecure();
-    HTTPClient http;
-    if (http.begin(client, url)) {
-      if (g_providers[idx].key.length())
-        http.addHeader("Authorization", "Bearer " + g_providers[idx].key);
-      http.setTimeout(10000);
-      code = http.GET();
-      http.end();
-    }
-  } else {
-    HTTPClient http;
-    if (http.begin(url)) {
-      if (g_providers[idx].key.length())
-        http.addHeader("Authorization", "Bearer " + g_providers[idx].key);
-      http.setTimeout(10000);
-      code = http.GET();
-      http.end();
-    }
-  }
+  int code = httpGetModels(idx, 10000, nullptr);
   unsigned long lat = millis() - t0;
 
   JsonDocument out;
@@ -1905,6 +1982,19 @@ void handleApiReboot() {
   sendJson(200, "{\"ok\":true}");
   delay(200);
   ESP.restart();
+}
+
+// Full plaintext tokens, admin-only and fetched explicitly by the dashboard.
+// /api/state deliberately carries masked values so plaintext tokens do not
+// ride along on every 30 s state poll.
+void handleApiTokensReveal() {
+  if (!requireAdmin()) return;
+  JsonDocument doc;
+  JsonArray arr = doc["tokens"].to<JsonArray>();
+  for (int i = 0; i < g_tokenCount; i++) arr.add(g_tokens[i]);
+  String out;
+  serializeJson(doc, out);
+  sendJson(200, out);
 }
 
 void handleApiTokenGenerate() {
@@ -2044,7 +2134,7 @@ a{color:#3fd9e4;text-decoration:none}
 void handleLoginPost() {
   String p = server.arg("password");
   if (ctEqual(p, g_adminPass)) {
-    server.sendHeader("Set-Cookie", "esp_auth=" + g_adminSession + "; Path=/; Max-Age=86400; HttpOnly");
+    server.sendHeader("Set-Cookie", "esp_auth=" + g_adminSession + "; Path=/; Max-Age=86400; HttpOnly; SameSite=Strict");
     server.sendHeader("Location", "/");
     server.send(303, "", "");
   } else {
@@ -2076,10 +2166,18 @@ void handleRoot() {
 // Tasks
 // ---------------------------------------------------------------------------
 void webServerTask(void*) {
+  unsigned long lastUsageSave = 0;
   for (;;) {
     server.handleClient();
     if (g_apMode) dnsServer.processNextRequest();
     wsAcceptClients();
+    // Flush accumulated usage to NVS at most every 30 s and only when dirty,
+    // so request bursts cost zero NVS writes.
+    if (g_usageDirty && millis() - lastUsageSave > 30000) {
+      g_usageDirty = false;
+      saveUsage();
+      lastUsageSave = millis();
+    }
   }
 }
 
@@ -2152,6 +2250,7 @@ void setup() {
   server.on("/api/providers/fetch", HTTP_POST, handleApiProviderFetch);
   server.on("/api/providers/ping", HTTP_POST, handleApiProviderPing);
   server.on("/api/reboot", HTTP_POST, handleApiReboot);
+  server.on("/api/tokens", HTTP_GET, handleApiTokensReveal);
   server.on("/api/token/generate", HTTP_POST, handleApiTokenGenerate);
   server.on("/api/token/delete", HTTP_POST, handleApiTokenDelete);
   server.on("/api/token/clear", HTTP_POST, handleApiTokenClear);

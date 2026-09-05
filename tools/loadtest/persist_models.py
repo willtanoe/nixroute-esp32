@@ -1,5 +1,5 @@
-import sys, time, json
-sys.path.insert(0, ".")
+import sys, os, time, json
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from stress import admin_login, a_req, health
 
 H = "192.168.110.187"

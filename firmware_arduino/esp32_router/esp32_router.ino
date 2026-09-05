@@ -563,6 +563,19 @@ bool isAuthenticated() {
   return sessionCookieValue() == g_adminSession;  // exact match, no substring trick
 }
 
+// Constant-time string equality over the longer of the two lengths (same
+// technique as the bearer-token compare in authCheck()).
+bool ctEqual(const String& a, const String& b) {
+  volatile int d = 0;
+  size_t n = a.length() > b.length() ? a.length() : b.length();
+  for (size_t j = 0; j < n; j++) {
+    char x = j < a.length() ? a[j] : 0;
+    char y = j < b.length() ? b[j] : 0;
+    d |= x ^ y;
+  }
+  return d == 0 && a.length() == b.length();
+}
+
 bool authCheck() {
   if (g_tokenCount == 0) return true;
   if (!server.hasHeader("Authorization")) return false;
@@ -865,7 +878,9 @@ String readBodyManual(T& client, bool chunked, size_t contentLength,
         delay(1);
       }
     }
-    finished = !capped;  // close-delimited; natural EOF or 5 s idle
+    // Close-delimited: only complete if the peer actually closed. An idle
+    // timeout with the socket still open means a truncated body.
+    finished = !capped && !client.connected();
   }
   if (complete) *complete = finished;
   return body;
@@ -873,9 +888,10 @@ String readBodyManual(T& client, bool chunked, size_t contentLength,
 
 template <class T>
 bool streamResponseManual(T& client, bool chunked, size_t contentLength,
-                          NetworkClient& c, uint32_t* pt, uint32_t* ct, uint32_t* tt) {
+                          NetworkClient& c, int code,
+                          uint32_t* pt, uint32_t* ct, uint32_t* tt) {
   bool sent = true;
-  c.print("HTTP/1.1 200 OK\r\n");
+  c.printf("HTTP/1.1 %d %s\r\n", code, reasonPhrase(code));
   c.print("Content-Type: text/event-stream\r\n");
   c.print("Access-Control-Allow-Origin: *\r\n");
   c.print("Cache-Control: no-cache\r\n");
@@ -883,7 +899,7 @@ bool streamResponseManual(T& client, bool chunked, size_t contentLength,
   c.print("Connection: close\r\n\r\n");
   uint8_t buf[1024];
   String tail;
-  tail.reserve(4096);
+  tail.reserve(8192);
   size_t remaining = contentLength;
   unsigned long lastData = millis();
 
@@ -895,7 +911,7 @@ bool streamResponseManual(T& client, bool chunked, size_t contentLength,
     c.print("\r\n");
     c.flush();
     tail.concat((const char*)p, n);
-    if (tail.length() > 4096) tail.remove(0, tail.length() - 4096);
+    if (tail.length() > 8192) tail.remove(0, tail.length() - 8192);
     return true;
   };
 
@@ -1026,8 +1042,8 @@ int relayUpstream(T& client, ProxyJob* job, NetworkClient& c,
     uint32_t pt = 0, ct = 0, tt = 0;
     bool sent = true;
     if (job->isStream) {
-      job->responseStarted = true;  // 200 head is about to hit the client
-      sent = streamResponseManual(client, chunked, contentLength, c, &pt, &ct, &tt);
+      job->responseStarted = true;  // 2xx head is about to hit the client
+      sent = streamResponseManual(client, chunked, contentLength, c, code, &pt, &ct, &tt);
     } else {
       bool complete = false;
       String resp = readBodyManual(client, chunked, contentLength, &complete);
@@ -1041,7 +1057,7 @@ int relayUpstream(T& client, ProxyJob* job, NetworkClient& c,
       }
       job->responseStarted = true;
       parseUsage(resp, pt, ct, tt);
-      sent = writeJson(c, 200, resp.length() ? resp : "{}");
+      sent = writeJson(c, code, resp.length() ? resp : "{}");
     }
     if (delivered) *delivered = sent;
     outPt = pt; outCt = ct; outTt = tt;
@@ -1382,17 +1398,64 @@ void handleOptions() {
 #define MODEL_HEAD_MAX 16384
 static const char* STREAM_OPTS = ",\"stream_options\":{\"include_usage\":true}";
 
-// Robust boolean-JSON-flag lookup: matches "stream":true regardless of the
-// whitespace around the colon.
-bool jsonFlagTrue(const String& head, const char* key) {
-  String pat = String("\"") + key + "\"";
-  int k = head.indexOf(pat);
-  if (k < 0) return false;
-  int i = head.indexOf(':', k + pat.length());
-  if (i < 0) return false;
-  i++;
-  while (i < (int)head.length() && (head[i] == ' ' || head[i] == '\t')) i++;
-  return head.substring(i).startsWith("true");
+// Locates a TOP-LEVEL member `key` in a (possibly truncated) flat JSON object
+// and reports the raw span of its value [vs, ve) — for a string value the span
+// excludes the surrounding quotes; `raw` carries the unescaped string value or
+// the bare literal ("true"/"false"/number). String literals (incl. escapes) are
+// walked so a "model" mention inside message content is never mistaken for the
+// routing key the way a plain indexOf() would.
+bool findTopLevelMember(const String& s, const char* key, int& vs, int& ve, String& raw) {
+  const size_t klen = strlen(key);
+  const char* p = s.c_str();
+  const int n = (int)s.length();
+  int depth = 0;
+  bool inStr = false;
+  for (int i = 0; i < n; i++) {
+    char c = p[i];
+    if (inStr) {
+      if (c == '\\') i++;
+      else if (c == '"') inStr = false;
+      continue;
+    }
+    if (c == '"') {
+      // Candidate key at depth 1: "<key>" followed (after whitespace) by ':'.
+      if (depth == 1 && i + (int)klen + 1 < n && p[i + 1 + klen] == '"' &&
+          memcmp(p + i + 1, key, klen) == 0) {
+        int j = i + klen + 2;
+        while (j < n && (p[j] == ' ' || p[j] == '\t' || p[j] == '\r' || p[j] == '\n')) j++;
+        if (j < n && p[j] == ':') {
+          j++;
+          while (j < n && (p[j] == ' ' || p[j] == '\t' || p[j] == '\r' || p[j] == '\n')) j++;
+          if (j >= n) return false;
+          if (p[j] == '"') {  // string value
+            vs = j + 1;
+            j++;
+            raw = "";
+            while (j < n) {
+              char d = p[j];
+              if (d == '\\' && j + 1 < n) { raw += p[j + 1]; j += 2; continue; }
+              if (d == '"') { ve = j; return true; }
+              raw += d;
+              j++;
+            }
+            ve = n;  // truncated value (head window ran out)
+            return raw.length() > 0;
+          }
+          // bare literal (true/false/number)
+          vs = j;
+          while (j < n && p[j] != ',' && p[j] != '}' && p[j] != ']' && p[j] != ' ' && p[j] != '\n') j++;
+          ve = j;
+          raw = s.substring(vs, ve);
+          return true;
+        }
+      }
+      inStr = true;  // ordinary string (key we don't want, or a value)
+      continue;
+    }
+    if (c == '{' || c == '[') depth++;
+    else if (c == '}' || c == ']') depth--;
+  }
+  return false;
 }
 
 // Detects "model" in g_head, rewrites it to the upstream name, injects
@@ -1401,16 +1464,15 @@ bool jsonFlagTrue(const String& head, const char* key) {
 // records the error in g_chatError/g_chatErrorCode and returns false without
 // touching the shared body pipe.
 bool detectAndStream() {
-  String model = "";
-  int mi = g_head.indexOf("\"model\"");
-  if (mi >= 0) {
-    int q1 = g_head.indexOf('"', mi + 7);
-    int q2 = q1 >= 0 ? g_head.indexOf('"', q1 + 1) : -1;
-    if (q1 > 0 && q2 > q1) model = g_head.substring(q1 + 1, q2);
+  int mvs = -1, mve = -1;
+  String model;
+  if (!findTopLevelMember(g_head, "model", mvs, mve, model) || !model.length()) {
+    g_chatError = "missing model"; g_chatErrorCode = 400; return false;
   }
-  if (!model.length()) { g_chatError = "missing model"; g_chatErrorCode = 400; return false; }
 
-  bool isStream = jsonFlagTrue(g_head, "stream");
+  int svs = -1, sve = -1;
+  String streamVal;
+  bool isStream = findTopLevelMember(g_head, "stream", svs, sve, streamVal) && streamVal == "true";
 
   int candidates[MAX_PROVIDERS];
   String upstreamModel;
@@ -1419,19 +1481,15 @@ bool detectAndStream() {
   if (n < 0) { g_chatError = "requested provider is disabled or cooling down"; g_chatErrorCode = 503; return false; }
   if (n == 0) { g_chatError = "no active provider available"; g_chatErrorCode = 500; return false; }
 
-  // rewrite model value in the head
-  int q1 = g_head.indexOf('"', mi + 7);
-  int q2 = q1 >= 0 ? g_head.indexOf('"', q1 + 1) : -1;
-  if (q1 > 0 && q2 > q1)
-    g_head = g_head.substring(0, q1 + 1) + upstreamModel + g_head.substring(q2);
+  // rewrite the model value in place (span is inside the surrounding quotes)
+  if (mvs > 0 && mve > mvs)
+    g_head = g_head.substring(0, mvs) + upstreamModel + g_head.substring(mve);
 
-  // inject stream_options right after the (rewritten) model value
-  if (isStream && g_head.indexOf("stream_options") < 0) {
-    int m2 = g_head.indexOf("\"model\"");
-    int a1 = g_head.indexOf('"', m2 + 7);
-    int a2 = a1 >= 0 ? g_head.indexOf('"', a1 + 1) : -1;
-    if (a1 > 0 && a2 > a1)
-      g_head = g_head.substring(0, a2 + 1) + STREAM_OPTS + g_head.substring(a2 + 1);
+  // inject stream_options right after the (rewritten) model value's closing quote
+  if (isStream && g_head.indexOf("stream_options") < 0 && mvs > 0) {
+    int ins = mvs + upstreamModel.length() + 1;
+    if (ins <= (int)g_head.length())
+      g_head = g_head.substring(0, ins) + STREAM_OPTS + g_head.substring(ins);
   }
 
   ProxyJob* job = new ProxyJob();
@@ -1985,7 +2043,7 @@ a{color:#3fd9e4;text-decoration:none}
 
 void handleLoginPost() {
   String p = server.arg("password");
-  if (p == g_adminPass) {
+  if (ctEqual(p, g_adminPass)) {
     server.sendHeader("Set-Cookie", "esp_auth=" + g_adminSession + "; Path=/; Max-Age=86400; HttpOnly");
     server.sendHeader("Location", "/");
     server.send(303, "", "");
@@ -2054,7 +2112,16 @@ void setup() {
         Serial.println("mDNS http://nixroute.local");
       }
     } else {
-      Serial.printf("\nWiFi FAIL %d\n", WiFi.status());
+      // Configured WiFi never came up — fall back to the setup AP so the
+      // dashboard stays reachable (a dead STA link would otherwise make the
+      // device unreachable until it is manually re-flashed).
+      Serial.printf("\nWiFi FAIL %d — falling back to AP setup mode\n", WiFi.status());
+      WiFi.mode(WIFI_AP);
+      WiFi.softAP("NixRoute-Setup", "12345678");
+      g_apMode = true;
+      dnsServer.start(53, "*", WiFi.softAPIP());
+      Serial.printf("AP 'NixRoute-Setup' (pw 12345678) IP %s\n",
+                    WiFi.softAPIP().toString().c_str());
     }
   } else {
     WiFi.mode(WIFI_AP);
@@ -2105,7 +2172,9 @@ void setup() {
   // FreeRTOS primitives
   g_statsMutex = xSemaphoreCreateMutex();
   g_proxyQueue = xQueueCreate(PROXY_QUEUE_LEN, sizeof(ProxyJob*));
-  g_bodyStream = xStreamBufferCreate(8192, 1);
+  // Must be able to hold the full rewritten head (up to MODEL_HEAD_MAX) so the
+  // web task never blocks up to 10 s waiting for the proxy task to drain it.
+  g_bodyStream = xStreamBufferCreate(MODEL_HEAD_MAX + 1024, 1);
 
   // Pin the WebServer to Core 0 and the proxy engine to Core 1.
   // Generous web stack: serving the 40 KB dashboard + JSON handlers must never

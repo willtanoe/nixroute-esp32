@@ -21,7 +21,9 @@ def test_health(host, port):
         body = r.read().decode()
         print(body)
         data = json.loads(body)
-        assert "status" in data or "heap" in data, "unexpected health shape"
+        for key in ("status", "free_heap", "uptime_s"):
+            assert key in data, f"health response missing key: {key}"
+        assert data["status"] in ("ok", "wifi_disconnected", "ap_mode"), "unexpected health status"
         print("health OK")
 
 if __name__ == "__main__":

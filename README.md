@@ -280,8 +280,8 @@ python tests/scripts/test_admin_api.py --host 192.168.110.187 --password 123456
 Adversarial stress-testing against a mock upstream:
 
 ```bash
-python tools/loadtest/mock_upstream.py --port 8080
-python tools/loadtest/stress.py --host 192.168.110.187
+python tools/loadtest/mock_upstream.py --port 9000
+python tools/loadtest/stress.py --host 192.168.110.187 --mock-pc 192.168.110.107 --mock-port 9000
 ```
 
 ---

@@ -551,10 +551,11 @@ function appendLive(d){
   var first=tbody.querySelector('tr');
   var tr=document.createElement('tr');tr.innerHTML=row;
   tbody.insertBefore(tr, first);
-  // trim to 20 rows
+  // trim to 20 data rows (row 0 is the table header)
   var rows=tbody.querySelectorAll('tr');
-  for(var i=20;i<rows.length;i++)rows[i].remove();
-  document.getElementById('usage-recent-count').textContent=tbody.querySelectorAll('tr').length;
+  var dataRows=rows.length-1;
+  for(var i=rows.length-1;i>0&&dataRows>20;i--){rows[i].remove();dataRows--}
+  document.getElementById('usage-recent-count').textContent=dataRows;
 }
 
 /* ---------- Playground ---------- */
@@ -759,14 +760,14 @@ async function maybeAutoSync(){
 }
 async function load(){try{S=await api('/api/state');uptimeBase=S.stats.uptime_s;uptimeAt=Date.now();render();maybeAutoSync();connectWs()}catch(e){toast('Failed to load: '+e.message,'error')}}
 
-var ws;
+var ws, wsRetry=1000;
 function connectWs(){
   if(ws){try{ws.close()}catch(_){}}
   if(!S||!S.wifi.ip)return;
   try{
     ws=new WebSocket('ws://'+S.wifi.ip+':81');
-    ws.onmessage=function(ev){try{var d=JSON.parse(ev.data);if(d.type==='request')appendLive(d)}catch(_){}};
-    ws.onclose=function(){setTimeout(function(){if(S&&S.wifi.ip)connectWs()},3000)};
+    ws.onmessage=function(ev){wsRetry=1000;try{var d=JSON.parse(ev.data);if(d.type==='request')appendLive(d)}catch(_){}};
+    ws.onclose=function(){setTimeout(function(){if(S&&S.wifi.ip)connectWs()},wsRetry);wsRetry=Math.min(wsRetry*2,30000)};
   }catch(_){}
 }
 

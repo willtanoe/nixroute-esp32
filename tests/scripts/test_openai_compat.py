@@ -6,7 +6,7 @@ Tests POST /v1/chat/completions via curl-like + OpenAI SDK path.
 Usage:
   python test_openai_compat.py --host 192.168.1.50 --model deepseek-chat --token LOCAL
 """
-import argparse, json, urllib.request
+import argparse, json, urllib.request, urllib.error
 
 def parse_args():
     p = argparse.ArgumentParser()
@@ -30,13 +30,27 @@ def test_chat(args):
     data = json.dumps(payload).encode()
     req = urllib.request.Request(url, data=data, headers=headers)
     print(f"POST {url} model={args.model} stream={args.stream}")
-    with urllib.request.urlopen(req, timeout=30) as r:
-        print(f"status {r.status}")
-        if args.stream:
-            for line in r:
-                print(line.decode(errors='ignore').strip())
-        else:
-            print(r.read().decode()[:2000])
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            print(f"status {r.status}")
+            if args.stream:
+                got_content = False
+                for line in r:
+                    text = line.decode(errors='ignore').strip()
+                    print(text)
+                    if text.startswith("data:") and '"content"' in text:
+                        got_content = True
+                assert got_content, "no streamed content deltas received"
+            else:
+                body = r.read().decode()
+                print(body[:2000])
+                resp = json.loads(body)
+                assert resp.get("choices"), "response missing choices"
+                assert resp["choices"][0].get("message", {}).get("content"), "empty message content"
+        print("openai-compat OK")
+    except urllib.error.HTTPError as e:
+        print(f"HTTP {e.code}: {e.read().decode(errors='ignore')[:500]}")
+        raise SystemExit(1)
 
 if __name__ == "__main__":
     test_chat(parse_args())

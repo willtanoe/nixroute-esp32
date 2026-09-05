@@ -1,5 +1,5 @@
-import sys, time
-sys.path.insert(0, ".")
+import sys, os, time
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from stress import admin_login, a_req
 
 H = "192.168.110.187"
